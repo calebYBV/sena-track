@@ -15,8 +15,9 @@ function stability(r){
   }
 }
 function lostHand(){
-  if (++state.noHand > 8){ state.committed = null; state.cand = null; state.candCount = 0; }
+  if (++state.noHand > 8){ state.committed = null; state.cand = null; state.candCount = 0; return true; }
   holdBar.style.width = "0";
+  return false;
 }
 function addToPhrase(label){
   if (label.length === 1) state.phrase += label;

@@ -1,4 +1,4 @@
-export function initAuth(start) {
+export function initAuth(start, stop) {
 
   const AUTH_KEY = "senaTrackAuth";
   const loginScreen = document.getElementById("loginScreen");
@@ -8,8 +8,11 @@ export function initAuth(start) {
   const msg = document.getElementById("lfMsg");
   const pass = document.getElementById("lfPass");
   const toggle = document.getElementById("lfToggle");
+  let entered = false;
 
   function enterApp(){
+    if (entered) return;
+    entered = true;
     loginScreen.classList.add("hidden");
     appEl.style.display = "";
     logoutBtn.classList.remove("hidden");
@@ -67,6 +70,7 @@ export function initAuth(start) {
 
   logoutBtn.addEventListener("click", function(){
     localStorage.removeItem(AUTH_KEY);
+    stop();
     location.reload();
   });
 

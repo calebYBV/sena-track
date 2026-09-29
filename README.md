@@ -1,204 +1,72 @@
 # SEÑA-TRACK
 
-Reconocimiento de señas en tiempo real con MediaPipe y ecuaciones diferenciales ordinarias.
+Aplicación web para registrar señas estáticas y con movimiento, reconocerlas con la cámara y construir una frase con salida de voz.
 
-## Descripción
+## Funciones
 
-SEÑA-TRACK es un prototipo web que permitirá registrar y reconocer un conjunto de señas mediante una cámara y convertirlas en texto y voz.
+- Detección de manos y dibujo opcional de puntos faciales con MediaPipe Tasks Vision 0.10.14.
+- Registro de ejemplos de señas estáticas y movimientos; reconocimiento estático por KNN y de movimiento mediante DTW.
+- Gestos básicos por reglas, controles de tolerancia y duración, y texto acumulado con controles para añadir espacio, borrar el último carácter o limpiar.
+- Importación y exportación de señas en JSON, almacenamiento local y lectura en español mediante síntesis de voz del navegador.
+- Inicio de sesión únicamente de demostración. No valida credenciales ni conecta con Google o Apple.
 
-Utilizará MediaPipe para detectar puntos de referencia de las manos y del rostro. Posteriormente, aplicará ecuaciones diferenciales ordinarias (EDO) para filtrar las coordenadas y evaluar si mejora la estabilidad del rastreo y el reconocimiento.
+Los filtros EDO todavía no están implementados. `js/filters.js` se conserva como marcador de posición; no se muestran métricas o mejoras experimentales.
 
-El usuario podrá visualizar el modelo matemático utilizado y los indicadores de su efecto sobre el seguimiento.
+## Estructura
 
-> Proyecto en desarrollo. Las funcionalidades descritas corresponden al alcance previsto; los porcentajes de mejora se determinarán mediante pruebas.
+```text
+index.html
+css/styles.css
+js/
+  app.js          # Composición e inicialización
+  auth.js         # Inicio/cierre de la sesión de demostración
+  camera.js       # Permisos, modelos, detección, dibujo y ciclo de cámara
+  recognition.js  # Características, reglas, KNN y DTW
+  training.js     # Captura estática y registro de movimientos
+  storage.js      # Persistencia, migración, importación y exportación
+  ui.js           # Eventos y actualización de interfaz
+  filters.js      # Marcador: filtros EDO pendientes
+assets/images/    # Logo e imágenes de acceso
+```
 
-## Objetivo
+La app usa módulos ES sin proceso de compilación. MediaPipe se descarga desde jsDelivr con la versión fijada `0.10.14`; los modelos se cargan desde Google Cloud Storage. La cámara necesita un contexto seguro: `localhost` o HTTPS.
 
-Desarrollar un prototipo que reconozca un conjunto delimitado de señas de la Lengua de Señas Colombiana (LSC) y evaluar cómo las EDO influyen en la estabilidad del rastreo, el reconocimiento y el tiempo de respuesta.
+## Ejecutar localmente
 
-## Funcionamiento
+Desde la carpeta del proyecto, inicia un servidor estático:
 
-1. La cámara captura los movimientos del usuario en tiempo real.
-2. MediaPipe detecta los puntos de referencia de las manos y del rostro.
-3. Las EDO filtran las coordenadas para reducir vibraciones y variaciones no deseadas.
-4. El sistema analiza las posiciones y trayectorias para identificar las señas registradas.
-5. La seña reconocida se muestra como texto y puede reproducirse por voz.
+```bash
+python3 -m http.server 8000
+```
 
-Las EDO procesarán el rastreo obtenido de MediaPipe. El reconocimiento utilizará las coordenadas procesadas para identificar la seña.
+Abre <http://localhost:8000>. No abras `index.html` directamente desde el sistema de archivos, porque los módulos y el acceso a la cámara pueden quedar bloqueados.
 
-## Funcionalidades
+En GitHub Pages se puede publicar la carpeta raíz del proyecto; las referencias a CSS, JavaScript e imágenes son relativas y funcionan dentro de una subcarpeta.
 
-### Biblioteca de señas
+## Probar la cámara
 
-Permitirá capturar y administrar ejemplos para el reconocimiento.
+1. Abre la aplicación en `http://localhost:8000` o en un sitio HTTPS y permite el acceso a la cámara.
+2. Comprueba que desaparezca el mensaje de carga y que se dibujen los puntos al mostrar una mano.
+3. En **Enseñar una seña**, registra una seña fija y otra con movimiento; comprueba que aparezcan en **Mis señas** y que puedan reconocerse.
+4. Prueba los controles de frase, los ajustes, la importación/exportación y la lectura por voz.
+5. Cierra sesión y vuelve a entrar para comprobar que los ejemplos siguen guardados.
 
-- Añadir señas simples o señas con movimiento.
-- Asignar un nombre o significado.
-- Capturar varios ejemplos de cada seña.
-- Guardar, consultar, corregir y eliminar registros.
-- Visualizar los puntos de seguimiento durante la captura.
+Si el navegador deniega la cámara, revisa los permisos del sitio y recarga. La aplicación también informa si no encuentra una cámara, si otra aplicación la está usando o si MediaPipe no puede cargarse.
 
-### Traductor
+## Datos y privacidad
 
-Utilizará los ejemplos registrados para reconocer las señas en tiempo real.
+Los ejemplos se guardan en `localStorage` bajo `senas_mediapipe_v2`. Se sigue aceptando el formato estático anterior bajo `senas_mediapipe_v1`; al guardar, los datos quedan en la clave actual. Importar añade ejemplos al conjunto existente y exportar genera `mis-senas.json`. Cerrar sesión no borra esos datos.
 
-- Mostrar las palabras reconocidas.
-- Indicar cuando una seña no pueda identificarse.
-- Evitar repeticiones continuas al mantener una misma seña.
-- Borrar la última palabra o limpiar el texto.
-- Reproducir el resultado mediante voz.
+Los datos de inicio de sesión de demostración solo guardan un indicador local en `senaTrackAuth`; no constituyen autenticación real.
 
-Se incluirán dos modalidades de lectura:
+## Tecnologías y alcance
 
-| Modalidad | Funcionamiento |
-| --- | --- |
-| Lectura automática | Pronuncia la palabra cuando se confirma el reconocimiento. |
-| Lectura al presionar | Acumula las palabras y las reproduce al pulsar **Leer**. |
+- HTML, CSS y JavaScript nativo con módulos ES.
+- MediaPipe Tasks Vision para puntos de referencia de manos y rostro.
+- KNN para señas estáticas y DTW para secuencias de movimiento.
+- Web Speech API para la síntesis de voz, si está disponible en el navegador.
 
-En ambas modalidades, el reconocimiento y la escritura funcionan en tiempo real. La diferencia es el momento en que se reproduce la voz.
-
-## Distribución de la interfaz
-
-- **Lado izquierdo:** Biblioteca de señas, Traductor y sus controles.
-- **Lado derecho:** transmisión de la cámara con seguimiento de manos y rostro.
-- **Parte inferior de la cámara:** panel de ecuaciones diferenciales.
-
-El panel de EDO estará activo y a color únicamente en el Traductor. En la Biblioteca permanecerá estático y gris, sin actualizar ecuaciones ni porcentajes.
-
-### Panel de EDO
-
-Mostrará:
-
-- Nombre y expresión de la ecuación utilizada.
-- Parámetros principales del modelo.
-- Explicación breve de su función.
-- Indicadores de estabilidad.
-- Porcentajes obtenidos en evaluaciones, indicando qué se midió.
-- Retraso introducido por el procesamiento.
-
-También se contempla una comparación visual entre los puntos originales y los filtrados, utilizando colores diferentes.
-
-## Modelos matemáticos
-
-Se estudiarán dos modelos para filtrar las coordenadas.
-
-### Filtro de paso bajo de primer orden
-
-$$
-\frac{dy}{dt}=\frac{u(t)-y(t)}{\tau}
-$$
-
-Donde:
-
-- **u(t):** coordenada original detectada por MediaPipe.
-- **y(t):** coordenada filtrada.
-- **τ:** constante de tiempo que controla el suavizado.
-
-Este modelo permite ajustar el equilibrio entre estabilidad y rapidez de respuesta. Un mayor suavizado también puede introducir mayor retraso.
-
-### Modelo de seguimiento amortiguado de segundo orden
-
-$$
-\frac{d^2y}{dt^2}+2\zeta\omega_n\frac{dy}{dt}+\omega_n^2y=\omega_n^2u(t)
-$$
-
-Donde:
-
-- **ζ:** factor de amortiguamiento.
-- **ωₙ:** frecuencia natural del modelo.
-- **u(t):** coordenada original.
-- **y(t):** coordenada filtrada.
-
-Este modelo permite regular la respuesta del seguimiento mediante el amortiguamiento y la frecuencia natural.
-
-### Aplicación en tiempo real
-
-Los filtros actualizarán sus valores con cada nueva detección, considerando el tiempo transcurrido entre fotogramas.
-
-Se evaluará qué modelo y qué parámetros permiten reducir las variaciones sin perder los movimientos necesarios para distinguir las señas. La selección automática dependerá de criterios definidos y comprobados mediante pruebas.
-
-## Medición de la mejora
-
-Se comparará el funcionamiento con y sin filtrado adicional utilizando la misma entrada.
-
-| Indicador | Qué se evaluará |
-| --- | --- |
-| Estabilidad | Variación de los puntos en condiciones controladas. |
-| Reconocimiento | Proporción de señas identificadas correctamente. |
-| Tiempo de respuesta | Retraso del filtrado y del reconocimiento. |
-
-Para una medida de variación **J**, donde un valor menor indica mayor estabilidad:
-
-$$
-\text{Reducción de variación (\%)}=
-\frac{J_{\text{base}}-J_{\text{filtrado}}}{J_{\text{base}}}\times100
-$$
-
-Esta fórmula se utilizará cuando la variación base sea mayor que cero.
-
-**Ejemplo:** si durante una prueba de mano quieta la variación pasa de 10 a 7 unidades, se obtiene una reducción del 30 %.
-
-Ese resultado representa una reducción de la variación del rastreo; no significa automáticamente un 30 % más de aciertos en el reconocimiento.
-
-Los indicadores calculados en vivo y los resultados de pruebas previas se mostrarán por separado. También se registrarán los casos en que el filtrado aumente el retraso o no mejore el resultado.
-
-> El 30 % es un ejemplo ilustrativo, no un resultado experimental del proyecto.
-
-## Tecnologías y recursos previstos
-
-- **MediaPipe:** detección de puntos de referencia.
-- **EDO:** filtrado temporal de coordenadas.
-- **Interfaz web:** biblioteca, traductor y panel matemático.
-- **Síntesis de voz:** reproducción de las palabras reconocidas.
-- **Computador con cámara y salida de audio:** ejecución y pruebas.
-
-El lenguaje de programación, el almacenamiento y el método de reconocimiento se documentarán al definir la implementación.
-
-## Instalación y ejecución
-
-Las instrucciones de instalación y ejecución se añadirán al publicar la primera versión funcional, junto con las dependencias y los requisitos correspondientes.
-
-## Plan de desarrollo
-
-- [ ] Diseñar la interfaz principal.
-- [ ] Integrar la cámara y MediaPipe.
-- [ ] Implementar la captura de señas simples y con movimiento.
-- [ ] Crear la biblioteca y sus controles.
-- [ ] Implementar los filtros de primer y segundo orden.
-- [ ] Integrar el reconocimiento en tiempo real.
-- [ ] Añadir la salida de texto y voz.
-- [ ] Incorporar el panel de EDO e indicadores.
-- [ ] Realizar pruebas de estabilidad, reconocimiento y respuesta.
-- [ ] Documentar los resultados y las limitaciones.
-
-## Alcance
-
-El prototipo trabajará inicialmente con un conjunto limitado de señas de la Lengua de Señas Colombiana, incluyendo el abecedario manual y algunas palabras cotidianas.
-
-No contempla traducir conversaciones completas ni convertir automáticamente una secuencia de señas en una oración con gramática natural.
-
-Se buscará orientación del programa de lengua de señas para validar los ejemplos y evaluar la utilidad del sistema.
-
-## Impacto
-
-SEÑA-TRACK busca explorar herramientas tecnológicas que contribuyan a reducir barreras de comunicación y demostrar una aplicación práctica de las ecuaciones diferenciales.
-
-El proyecto se relaciona con:
-
-- **ODS 9 — Industria, innovación e infraestructura:** desarrollo y evaluación de una solución tecnológica.
-- **ODS 10 — Reducción de las desigualdades:** intención de apoyar una comunicación más accesible.
-
-## Identidad visual
-
-La interfaz utilizará una estética Web 2.0 / Corporate con elementos inspirados en Wii.
-
-| Color | Código |
-| --- | --- |
-| Blanco | `#FFFFFF` |
-| Azul cielo | `#74E4FF` |
-| Azul principal | `#0C71C6` |
-| Verde claro | `#86E750` |
-| Verde oscuro | `#6AB63F` |
+El conjunto de gestos por reglas y las señas enseñadas son un prototipo, no un traductor completo de LSC. No se incluyen archivos en `assets/sounds/` porque la app no usa audio pregrabado.
 
 ## Integrantes
 

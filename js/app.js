@@ -29,4 +29,4 @@ const recognition = createRecognition({ state, dom });
 const training = createTraining({ state, dom, ui, storage, recognition });
 const camera = createCamera({ state, dom, ui, training, recognition });
 training.refreshButtons();
-initAuth(camera.start);
+initAuth(camera.start, camera.stop);

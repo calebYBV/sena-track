@@ -91,8 +91,11 @@ function ruleSign(lm){
   const thumbUp = thumb && P[4][1] < P[5][1];
   let label = null;
   if (idx && mid && ring && pink && thumb) label = "Hola";
+  else if (idx && mid && ring && pink && !thumb) label = "Cuatro";
   else if (!idx && !mid && !ring && !pink) label = thumbUp ? "Bien" : "Puño";
-  else if (idx && mid && !ring && !pink) label = "Paz";
+  else if (idx && mid && ring && !pink && !thumb) label = "Tres";
+  else if (idx && mid && !ring && !pink) label = "Dos";
+  else if (idx && !mid && !ring && !pink && thumb) label = "L";
   else if (idx && !mid && !ring && !pink && !thumb) label = "Uno";
   else if (thumb && idx && !mid && !ring && pink) label = "Te quiero";
   return label ? { label, conf: null, src: "gesto básico" } : null;
