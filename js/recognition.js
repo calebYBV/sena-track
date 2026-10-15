@@ -1,8 +1,12 @@
-export function createRecognition({ state, dom }) {
-const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
+export function calculateDistanceReduction(rawDistance, filteredDistance){
+  if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance) || rawDistance <= 1e-9) return null;
+  return 100 * (rawDistance - filteredDistance) / rawDistance;
+}
+
+export function createRecognition({ state, dom }){
+const { $, video } = dom;
 const K = 5;
-/* PURE-START */
-const POS_W = 2;           // peso de la trayectoria de la muñeca frente a la forma de la mano
+const POS_W = 2;
 
 function shapeFeatures(lm, ar, flip){
   const w = lm[0];
@@ -23,35 +27,56 @@ function resample(vecs, n){
   }
   return out;
 }
-/* Convierte una grabación (lista de frames) en una secuencia de N_STEPS vectores.
-   Recorta las partes en que la mano está quieta. Devuelve null si no hubo movimiento. */
-function toSequence(frames, ar, n = 24, thr = 0.035){
+function sequenceWindow(frames, ar, thr){
   if (frames.length < 8) return null;
   const left = frames.filter(f => f.hand === "Left").length;
   const flip = left > frames.length / 2 ? -1 : 1;
   const shapes = frames.map(f => shapeFeatures(f.lm, ar, flip));
   const wr = frames.map(f => [f.lm[0].x * ar * flip, f.lm[0].y]);
   const hsz = frames.reduce((a, f) => a + Math.hypot((f.lm[9].x - f.lm[0].x) * ar, f.lm[9].y - f.lm[0].y), 0) / frames.length || 0.1;
-  const e = frames.map((_, i) => {
+  const energy = frames.map((_, i) => {
     if (i === 0) return 0;
     const dw = Math.hypot(wr[i][0] - wr[i - 1][0], wr[i][1] - wr[i - 1][1]) / hsz;
     return dw + 0.25 * dist(shapes[i], shapes[i - 1]);
   });
-  const sm = e.map((_, i) => ((e[i - 1] ?? e[i]) + e[i] + (e[i + 1] ?? e[i])) / 3);
-  let a = sm.findIndex(v => v > thr);
-  if (a < 0) return null;
-  let b = sm.length - 1 - [...sm].reverse().findIndex(v => v > thr);
-  if (b - a < 5) return null;
-  a = Math.max(0, a - 3); b = Math.min(frames.length - 1, b + 3);
+  const smoothed = energy.map((_, i) => ((energy[i - 1] ?? energy[i]) + energy[i] + (energy[i + 1] ?? energy[i])) / 3);
+  let start = smoothed.findIndex(v => v > thr);
+  if (start < 0) return null;
+  let end = smoothed.length - 1 - [...smoothed].reverse().findIndex(v => v > thr);
+  if (end - start < 5) return null;
+  return { start: Math.max(0, start - 3), end: Math.min(frames.length - 1, end + 3) };
+}
+function sequenceFromWindow(frames, ar, n, window){
+  const left = frames.slice(window.start, window.end + 1).filter(f => f.hand === "Left").length;
+  const flip = left > (window.end - window.start + 1) / 2 ? -1 : 1;
+  const shapes = frames.map(f => shapeFeatures(f.lm, ar, flip));
+  const wr = frames.map(f => [f.lm[0].x * ar * flip, f.lm[0].y]);
+  const hsz = frames.reduce((a, f) => a + Math.hypot((f.lm[9].x - f.lm[0].x) * ar, f.lm[9].y - f.lm[0].y), 0) / frames.length || 0.1;
   const vecs = [];
-  for (let i = a; i <= b; i++){
-    const px = (wr[i][0] - wr[a][0]) / hsz * POS_W;
-    const py = (wr[i][1] - wr[a][1]) / hsz * POS_W;
+  for (let i = window.start; i <= window.end; i++){
+    const px = (wr[i][0] - wr[window.start][0]) / hsz * POS_W;
+    const py = (wr[i][1] - wr[window.start][1]) / hsz * POS_W;
     vecs.push([...shapes[i], px, py]);
   }
   return resample(vecs, n).map(v => v.map(x => +x.toFixed(3)));
 }
-/* Distancia DTW normalizada entre dos secuencias */
+function toSequence(frames, ar, n = 24, thr = 0.035){
+  const window = sequenceWindow(frames, ar, thr);
+  return window ? sequenceFromWindow(frames, ar, n, window) : null;
+}
+function toSequencePair(rawFrames, filteredFrames, ar, n = 24, thr = 0.035){
+  if (rawFrames.length !== filteredFrames.length) throw new RangeError("Las secuencias raw y filtrada deben estar sincronizadas.");
+  if (rawFrames.some((frame, index) =>
+    frame.hand !== filteredFrames[index].hand || frame.time !== filteredFrames[index].time)){
+    throw new RangeError("Las secuencias deben conservar la misma mano y los mismos tiempos de origen.");
+  }
+  const window = sequenceWindow(rawFrames, ar, thr);
+  if (!window) return null;
+  return {
+    raw: sequenceFromWindow(rawFrames, ar, n, window),
+    filtered: sequenceFromWindow(filteredFrames, ar, n, window)
+  };
+}
 function dtw(a, b){
   const n = a.length, m = b.length, INF = 1e9;
   let prev = new Float64Array(m + 1).fill(INF), cur = new Float64Array(m + 1);
@@ -65,23 +90,40 @@ function dtw(a, b){
   }
   return prev[m] / (n + m);
 }
-/* ---------- Señas fijas: KNN ---------- */
 function features(lm, hand){
   return shapeFeatures(lm, video.videoWidth / video.videoHeight, hand === "Left" ? -1 : 1);
 }
-function classify(f){
-  if (!state.samples.length) return null;
-  const ds = state.samples.map(s => [dist(f, s.f), s.l]).sort((a, b) => a[0] - b[0]).slice(0, K);
-  if (ds[0][0] > parseFloat($("tol").value)) return null;
-  const votes = {}; let total = 0;
-  for (const [d, l] of ds){ const w = 1 / (d + 0.05); votes[l] = (votes[l] || 0) + w; total += w; }
-  const best = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
-  const conf = best[1] / total;
-  if (conf < 0.55) return null;
-  return { label: best[0], conf, src: "seña fija" };
+function references(sample, branch){
+  return branch === "raw" ? (sample.r || sample.f) : sample.f;
 }
-
-/* ---------- Gestos básicos por reglas ---------- */
+function staticDistances(f, branch){
+  const best = {};
+  for (const sample of state.samples){
+    const reference = references(sample, branch);
+    if (!Array.isArray(reference) || reference.length !== f.length) continue;
+    const distance = dist(f, reference);
+    if (best[sample.l] === undefined || distance < best[sample.l]) best[sample.l] = distance;
+  }
+  return best;
+}
+function classify(f, branch = "filtered"){
+  const ds = [];
+  for (const sample of state.samples){
+    const reference = references(sample, branch);
+    if (Array.isArray(reference) && reference.length === f.length){
+      ds.push([dist(f, reference), sample.l]);
+    }
+  }
+  ds.sort((a, b) => a[0] - b[0]);
+  ds.length = Math.min(ds.length, K);
+  if (!ds.length || ds[0][0] > parseFloat($("tol").value)) return null;
+  const votes = {}; let total = 0;
+  for (const [distance, label] of ds){ const weight = 1 / (distance + 0.05); votes[label] = (votes[label] || 0) + weight; total += weight; }
+  const best = Object.entries(votes).sort((a, b) => b[1] - a[1])[0];
+  const score = best[1] / total;
+  if (score < 0.55) return null;
+  return { label: best[0], conf: score, src: "seña fija" };
+}
 function ruleSign(lm){
   const ar = video.videoWidth / video.videoHeight;
   const P = lm.map(p => [p.x * ar, p.y]);
@@ -100,23 +142,30 @@ function ruleSign(lm){
   else if (thumb && idx && !mid && !ring && pink) label = "Te quiero";
   return label ? { label, conf: null, src: "gesto básico" } : null;
 }
-
-/* ---------- Señas con movimiento: DTW ---------- */
-function classifyMotion(seq){
-  if (!state.motions.length) return null;
-  const tol = parseFloat($("tolM").value);
+function motionReferences(motion, branch){
+  return branch === "raw" ? (motion.r || motion.s) : motion.s;
+}
+function motionDistances(seq, branch){
   const best = {};
-  for (const m of state.motions){
-    const d = dtw(seq, m.s);
-    if (best[m.l] === undefined || d < best[m.l]) best[m.l] = d;
+  for (const motion of state.motions){
+    const reference = motionReferences(motion, branch);
+    if (!Array.isArray(reference)) continue;
+    const distance = dtw(seq, reference);
+    if (best[motion.l] === undefined || distance < best[motion.l]) best[motion.l] = distance;
   }
+  return best;
+}
+function classifyMotion(seq, branch = "filtered"){
+  const tol = parseFloat($("tolM").value);
+  const best = motionDistances(seq, branch);
   const arr = Object.entries(best).sort((a, b) => a[1] - b[1]);
-  const [label, d1] = arr[0];
-  if (d1 > tol) return null;
-  const conf = arr.length > 1 ? arr[1][1] / (d1 + arr[1][1]) : Math.max(0, 1 - d1 / tol);
-  return { label, conf, src: "seña con movimiento" };
+  if (!arr.length) return null;
+  const [label, distance] = arr[0];
+  if (distance > tol) return null;
+  const score = arr.length > 1 ? arr[1][1] / (distance + arr[1][1]) : Math.max(0, 1 - distance / tol);
+  return { label, conf: score, src: "seña con movimiento" };
 }
 
-
-return { features, classify, ruleSign, classifyMotion, toSequence };
+return { features, classify, ruleSign, classifyMotion, toSequence, toSequencePair,
+  staticDistances, motionDistances, calculateDistanceReduction };
 }

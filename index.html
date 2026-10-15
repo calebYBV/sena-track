@@ -12,29 +12,43 @@
 </head>
 <body>
 
-<button id="logoutBtn" class="hidden">Cerrar sesión</button>
-
 <div id="loginScreen">
   <div class="login-card">
     <img class="login-banner" src="./assets/images/login-banner.png" alt="Seña-Track">
     <div class="login-body">
-      <p class="login-sub">Modo demostración: acepta cualquier credencial y no conecta con Google ni Apple.</p>
+      <p class="login-sub">Accede para sincronizar tus señas privadas y preferencias.</p>
+      <h2 id="loginTitle">Iniciar sesión</h2>
       <form id="loginForm">
         <div class="lf-field">
-          <label for="lfUser">Usuario</label>
-          <input id="lfUser" type="text" autocomplete="username" placeholder="Tu usuario" required>
+          <label for="lfUser">Correo electrónico</label>
+          <input id="lfUser" type="email" autocomplete="email" placeholder="tu@correo.com" required>
+        </div>
+        <div class="lf-field" id="lfNameField" hidden>
+          <label for="lfName">Nombre visible</label>
+          <input id="lfName" type="text" autocomplete="name" maxlength="80" placeholder="Tu nombre">
         </div>
         <div class="lf-field">
           <label for="lfPass">Contraseña</label>
           <div class="lf-input-wrap">
-            <input id="lfPass" type="password" autocomplete="current-password" placeholder="••••••••" required>
+            <input id="lfPass" type="password" autocomplete="current-password" minlength="8" placeholder="Al menos 8 caracteres" required>
             <button type="button" class="lf-toggle" id="lfToggle">Ver</button>
           </div>
         </div>
         <div class="lf-row-between"><a href="#" id="lfForgot">¿Olvidaste tu contraseña?</a></div>
-        <button class="lf-primary" type="submit">Ingresar</button>
-        <div class="lf-msg" id="lfMsg"></div>
+        <button class="lf-primary" id="authSubmit" type="submit">Ingresar</button>
       </form>
+      <form id="recoveryForm" hidden>
+        <div class="lf-field">
+          <label for="recoveryPass">Nueva contraseña</label>
+          <input id="recoveryPass" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <div class="lf-field">
+          <label for="recoveryPassConfirm">Repite la contraseña</label>
+          <input id="recoveryPassConfirm" type="password" autocomplete="new-password" minlength="8" required>
+        </div>
+        <button class="lf-primary" type="submit">Actualizar contraseña</button>
+      </form>
+      <div class="lf-msg" id="lfMsg" role="status" aria-live="polite"></div>
 
       <div class="lf-divider">o continúa con</div>
       <div class="lf-social">
@@ -48,73 +62,143 @@
         </button>
       </div>
 
-      <p class="lf-signup">¿No tienes cuenta? <a href="#" id="lfSignup">Regístrate</a></p>
+      <p class="lf-signup">¿No tienes cuenta? <a href="#" id="lfSignup">Crear una cuenta</a></p>
     </div>
     <img class="login-strip" src="./assets/images/login-strip.png" alt="">
   </div>
 </div>
 
 <main id="app" style="display:none">
-  <div>
-    <div class="brand">
-      <h1>Seña-Track</h1>
+  <header class="app-header">
+    <a class="brand" href="#workspace" aria-label="Seña-Track, inicio">
+      <img src="./assets/images/SE%C3%91A-TRACK%20%28LOGO%29.png" alt="">
+      <span class="brand-name">Seña-Track</span>
+    </a>
+    <nav class="quick-links" aria-label="Accesos rápidos">
+      <a href="#generalSettings">Ajustes</a>
+      <a href="#edoSettings">Ver EDO</a>
+    </nav>
+    <div class="header-account">
+      <p id="syncStatus" class="sync-status" role="status" aria-live="polite">Sincronización pendiente de configuración.</p>
+      <button id="syncRetry" class="btn line sync-retry" type="button" hidden>Reintentar</button>
+      <button id="logoutBtn" class="header-logout">Cerrar sesión</button>
     </div>
-    <p class="lead">Muestra una mano a la cámara. Reconoce señas fijas al instante y señas con movimiento cuando tú se lo pides.</p>
+  </header>
 
-    <div class="stage" id="stage">
-      <video id="video" autoplay muted playsinline></video>
-      <canvas id="canvas"></canvas>
-      <div class="banner" id="banner"><span id="bannerText"></span><div class="bar"><i id="bannerBar"></i></div></div>
-      <div class="count" id="count"></div>
-      <div class="readout">
-        <div class="sign idle" id="sign">Sin mano</div>
-        <div class="meta" id="meta"></div>
-      </div>
-      <div class="hold"><i id="holdBar"></i></div>
-      <div class="status" id="status">Cargando modelo y cámara…</div>
-    </div>
+  <div class="workspace" id="workspace">
+    <aside class="workspace-left" aria-label="Enseñar y administrar señas">
+      <section class="card white teach-card">
+        <h2><span class="card-icon" aria-hidden="true">✦</span> Enseñar una seña</h2>
+        <div class="seg" role="radiogroup" aria-label="Tipo de seña">
+          <label><input type="radio" name="kind" value="static" checked><span>Fija</span></label>
+          <label><input type="radio" name="kind" value="motion"><span>Con movimiento</span></label>
+        </div>
+        <label class="field-label" for="label">Nombre de la seña</label>
+        <input type="text" class="field" id="label" maxlength="20" placeholder="Escribe un nombre">
+        <button id="btnTrain" class="btn blue train-button" type="button">Capturar seña</button>
+        <div class="progress-heading"><span id="trainProgressLabel">Listo para capturar</span><span id="trainProgressCount"></span></div>
+        <div class="progress" role="progressbar" aria-label="Progreso de captura" aria-valuemin="0" aria-valuemax="40" aria-valuenow="0"><i id="trainBar"></i></div>
+        <p class="hint" id="trainHint">Captura varios cuadros para guardar un ejemplo.</p>
+      </section>
 
-    <div class="actions">
-      <button id="btnMotion" class="btn lime big">Reconocer seña con movimiento</button>
-      <span class="note">o pulsa la barra Espacio</span>
-    </div>
-    <p class="note" id="note" aria-live="polite"></p>
+      <section class="card white library-card">
+        <div class="card-heading">
+          <h2><span class="card-icon" aria-hidden="true">☷</span> Mis señas</h2>
+          <span class="library-scope">Cuenta actual</span>
+        </div>
+        <ul class="list" id="list"></ul>
+      </section>
+    </aside>
 
-    <div class="card white" style="margin-top:12px">
-      <h2>Frase</h2>
-      <div class="phrase-box" id="phrase" aria-live="polite"></div>
-      <div class="row">
-        <button id="btnSpace" class="btn line">Espacio</button>
-        <button id="btnBack" class="btn line">Borrar último</button>
-        <button id="btnClear" class="btn line">Limpiar todo</button>
-        <button id="btnSpeak" class="btn blue">Leer en voz alta</button>
-      </div>
-      <p class="hint">Las señas fijas se escriben solas si mantienes la mano quieta medio segundo. Baja la mano para repetir la misma seña.</p>
-    </div>
+    <section class="workspace-center" aria-label="Traductor y frase">
+      <section class="camera-section" aria-label="Cámara de seguimiento">
+        <div class="camera-toolbar">
+          <h2>Cámara</h2>
+          <span class="live-indicator" id="cameraIndicator"><i></i><span id="cameraIndicatorText">Iniciando cámara</span></span>
+        </div>
+        <div class="stage" id="stage">
+          <video id="video" autoplay muted playsinline></video>
+          <canvas id="canvas"></canvas>
+          <div class="banner" id="banner"><span id="bannerText"></span><div class="bar"><i id="bannerBar"></i></div></div>
+          <div class="count" id="count"></div>
+          <div class="readout">
+            <div class="sign idle" id="sign">Sin mano</div>
+            <div class="meta" id="meta"></div>
+          </div>
+          <div class="hold"><i id="holdBar"></i></div>
+          <div class="status" id="status">Cargando modelo y cámara…</div>
+        </div>
+        <button id="btnMotion" class="btn lime motion-button" type="button">Reconocer movimiento</button>
+        <p class="note" id="note" aria-live="polite"></p>
+      </section>
+
+      <section class="card white phrase-card" aria-labelledby="phraseTitle">
+        <div class="phrase-heading">
+          <h2 id="phraseTitle"><span class="card-icon" aria-hidden="true">♫</span> Frase y voz</h2>
+          <div class="speech-mode" role="radiogroup" aria-label="Modalidad de lectura">
+            <label><input type="radio" name="speechMode" value="automatic" checked><span>Automática</span></label>
+            <label><input type="radio" name="speechMode" value="manual"><span>Al presionar</span></label>
+          </div>
+        </div>
+        <div class="phrase-box" id="phrase" aria-live="polite"></div>
+        <div class="phrase-actions">
+          <button id="btnSpeak" class="btn blue" type="button">Leer</button>
+          <button id="btnStopSpeech" class="btn line" type="button">Detener</button>
+          <button id="btnBack" class="btn line" type="button">Borrar</button>
+          <button id="btnClear" class="btn line" type="button">Limpiar</button>
+          <button id="btnSpace" class="btn line phrase-space" type="button" aria-label="Añadir espacio">Espacio</button>
+        </div>
+        <label class="inline speech-permission"><input type="checkbox" id="speechEnabled" checked> <span>Permitir lectura en voz alta</span></label>
+      </section>
+    </section>
+
+    <aside class="workspace-right" aria-label="Comparación y seguimiento EDO">
+      <section class="card white evaluation" id="evaluationPanel" aria-labelledby="evaluationTitle">
+        <div class="evaluation-heading">
+          <div class="comparison-title">
+            <h2 id="evaluationTitle"><span class="card-icon" aria-hidden="true">▮</span> Comparación EDO</h2>
+            <p class="active-model"><span>Modelo activo</span><strong id="activeModelName">Filtro de primer orden</strong></p>
+          </div>
+          <span class="example-badge">Misma ejecución</span>
+        </div>
+        <label class="reference-control" for="evaluationReference">Seña de referencia</label>
+        <select id="evaluationReference">
+          <option value="">Candidata de la rama principal</option>
+        </select>
+        <p class="reference-line" id="referenceLabel">Referencia candidata: esperando una seña.</p>
+        <div class="comparison-branches">
+          <article class="comparison-branch">
+            <h3 id="rawBranchLabel">Sin EDO</h3>
+            <p class="identified-sign" id="rawPrediction">—</p>
+            <p class="branch-distance">Distancia<strong id="rawDistance">—</strong></p>
+          </article>
+          <article class="comparison-branch filtered">
+            <h3 id="filteredBranchLabel">Con EDO</h3>
+            <p class="identified-sign" id="filteredPrediction">—</p>
+            <p class="branch-distance">Distancia<strong id="filteredDistance">—</strong></p>
+          </article>
+        </div>
+        <div class="reduction-readout"><span>Reducción de distancia a la seña de referencia</span><strong id="distanceReduction">No calculable</strong></div>
+        <p class="comparison-message" id="comparisonStatus">Muestra una mano para comparar.</p>
+        <p class="hint comparison-caveat">Coincidencia con la referencia, no exactitud del rastreo.</p>
+        <p class="hint" id="comparisonNote">La salida sin EDO es la de MediaPipe y puede incluir procesamiento interno.</p>
+      </section>
+
+      <section class="card white tracking-metrics" aria-labelledby="trackingMetricsTitle">
+        <h2 id="trackingMetricsTitle"><span class="card-icon" aria-hidden="true">⌁</span> Estabilidad y respuesta</h2>
+        <div class="tracking-metric-grid">
+          <p><strong>Vibración</strong><span id="vibrationReduction">No calculable</span><small id="vibrationDistances">Esperando un segmento quieto</small></p>
+          <p><strong>Retraso añadido</strong><span id="trackingLag">No calculable</span></p>
+        </div>
+        <p class="hint" id="trackingMetricNote">La reducción de vibración se evalúa con la mano quieta; el retraso se estima durante movimiento.</p>
+      </section>
+      <p class="hint face-status" id="faceStatus" aria-live="polite"></p>
+    </aside>
   </div>
 
-  <aside>
-    <div class="card sky">
-      <h2>Enseñar una seña</h2>
-      <div class="seg" role="radiogroup" aria-label="Tipo de seña">
-        <label><input type="radio" name="kind" value="static" checked><span>Fija</span></label>
-        <label><input type="radio" name="kind" value="motion"><span>Con movimiento</span></label>
-      </div>
-      <input type="text" class="field" id="label" maxlength="20" placeholder="Nombre (ej. A, Hola, Gracias)" aria-label="Nombre de la seña">
-      <div class="row">
-        <button id="btnTrain" class="btn blue">Capturar seña</button>
-      </div>
-      <div class="progress"><i id="trainBar"></i></div>
-      <p class="hint" id="trainHint"></p>
-    </div>
-
-    <div class="card white">
-      <h2>Mis señas</h2>
-      <ul class="list" id="list"></ul>
-    </div>
-
-    <div class="card sea">
-      <h2>Ajustes</h2>
+  <section class="settings-section" aria-label="Configuración">
+    <section class="card white settings-card" id="generalSettings" aria-labelledby="generalSettingsTitle">
+      <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> Ajustes generales</h2>
       <div class="ctl">
         <div class="top"><label for="tol">Tolerancia de señas fijas</label><span id="tolVal"></span></div>
         <input type="range" id="tol" min="0.3" max="1.5" step="0.05" value="0.8">
@@ -124,19 +208,94 @@
         <input type="range" id="tolM" min="0.2" max="2" step="0.05" value="0.7">
       </div>
       <div class="ctl">
-        <div class="top"><label for="dur">Duración del movimiento</label><span id="durVal"></span></div>
+        <div class="top"><label for="dur">Duración de captura y reconocimiento</label><span id="durVal"></span></div>
         <input type="range" id="dur" min="1" max="3.5" step="0.5" value="2">
       </div>
-      <p class="hint" style="margin-top:0">Más tolerancia reconoce con más facilidad pero se equivoca más. La duración se usa al grabar y al reconocer.</p>
-      <label class="inline"><input type="checkbox" id="rules" checked> <span>Usar gestos básicos (mano abierta, puño, paz, pulgar arriba…)</span></label>
-      <div class="row">
-        <button id="btnExport" class="btn line">Exportar señas</button>
-        <button id="btnImport" class="btn line">Importar</button>
-        <button id="btnReset" class="btn line">Borrar todas</button>
+      <p class="hint">Más tolerancia facilita la coincidencia, pero puede aumentar errores.</p>
+      <label class="inline"><input type="checkbox" id="rules" checked> <span>Usar gestos básicos</span></label>
+      <div class="settings-actions">
+        <button id="btnImportLocal" class="btn line" type="button">Importar biblioteca local</button>
+        <button id="btnExport" class="btn line" type="button">Exportar señas</button>
+        <button id="btnImport" class="btn line" type="button">Importar JSON</button>
+        <button id="btnReset" class="btn line" type="button">Borrar todas</button>
       </div>
       <input type="file" id="file" accept="application/json" hidden>
-    </div>
-  </aside>
+    </section>
+
+    <section class="card white edo-settings" id="edoSettings" aria-labelledby="edoSettingsTitle">
+      <h2 id="edoSettingsTitle"><span class="card-icon" aria-hidden="true">∿</span> EDO utilizada y configuración</h2>
+      <p class="active-model settings-model"><span>Modelo actualmente seleccionado</span><strong id="settingsModelName">Filtro de primer orden</strong></p>
+      <div class="equation-card">
+        <div id="firstEquation" class="equation-view">
+          <h3>Filtro de primer orden</h3>
+          <math class="equation-math" display="block" aria-label="Derivada de y respecto a t es igual a u de t menos y de t dividido por tau">
+            <mfrac><mrow><mi>d</mi><mi>y</mi></mrow><mrow><mi>d</mi><mi>t</mi></mrow></mfrac><mo>=</mo>
+            <mfrac><mrow><mi>u</mi><mo>(</mo><mi>t</mi><mo>)</mo><mo>−</mo><mi>y</mi><mo>(</mo><mi>t</mi><mo>)</mo></mrow><mi>τ</mi></mfrac>
+          </math>
+          <p id="firstDescription">Acerca gradualmente las coordenadas filtradas a las mediciones de MediaPipe para reducir vibraciones y saltos.</p>
+          <ul class="variables" id="firstVariables">
+            <li><strong>u(t)</strong><span>Coordenada detectada por MediaPipe.</span></li>
+            <li><strong>y(t)</strong><span>Coordenada filtrada.</span></li>
+            <li><strong>t</strong><span>Tiempo.</span></li>
+            <li><strong>τ</strong><span>Constante de tiempo que controla el suavizado y la rapidez.</span></li>
+          </ul>
+        </div>
+        <div id="secondEquation" class="equation-view" hidden>
+          <h3>Modelo de segundo orden amortiguado</h3>
+          <math class="equation-math" display="block" aria-label="Segunda derivada de y más dos zeta omega sub n por la derivada de y más omega sub n al cuadrado por y es igual a omega sub n al cuadrado por u de t">
+            <mfrac><mrow><msup><mi>d</mi><mn>2</mn></msup><mi>y</mi></mrow><mrow><mi>d</mi><msup><mi>t</mi><mn>2</mn></msup></mrow></mfrac>
+            <mo>+</mo><mn>2</mn><mi>ζ</mi><msub><mi>ω</mi><mi>n</mi></msub><mo>·</mo>
+            <mfrac><mrow><mi>d</mi><mi>y</mi></mrow><mrow><mi>d</mi><mi>t</mi></mrow></mfrac>
+            <mo>+</mo><msup><msub><mi>ω</mi><mi>n</mi></msub><mn>2</mn></msup><mi>y</mi>
+            <mo>=</mo><msup><msub><mi>ω</mi><mi>n</mi></msub><mn>2</mn></msup><mi>u</mi><mo>(</mo><mi>t</mi><mo>)</mo>
+          </math>
+          <p id="secondDescription">Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones de MediaPipe.</p>
+          <ul class="variables" id="secondVariables">
+            <li><strong>u(t)</strong><span>Coordenada detectada por MediaPipe.</span></li>
+            <li><strong>y(t)</strong><span>Coordenada filtrada.</span></li>
+            <li><strong>t</strong><span>Tiempo.</span></li>
+            <li><strong>dy/dt</strong><span>Velocidad del punto filtrado.</span></li>
+            <li><strong>d²y/dt²</strong><span>Aceleración del punto filtrado.</span></li>
+            <li><strong>ζ</strong><span>Amortiguamiento.</span></li>
+            <li><strong>ωₙ</strong><span>Frecuencia natural.</span></li>
+          </ul>
+        </div>
+        <p id="offDescription" class="off-description" hidden>Se usan directamente las coordenadas de MediaPipe, sin filtro EDO adicional de la aplicación.</p>
+      </div>
+      <div class="evaluation-controls">
+        <label>Modelo de filtro
+          <select id="filterModel" aria-describedby="filterModelDescription">
+            <option value="first">Primer orden</option>
+            <option value="second">Segundo orden</option>
+            <option value="off">Desactivado</option>
+          </select>
+        </label>
+        <p id="filterModelDescription" class="control-description">Filtro de primer orden: suavizado gradual con una constante de tiempo τ.</p>
+        <label id="tauControl">Constante de tiempo τ <span class="control-value"><output id="filterTauValue"></output></span>
+          <input id="filterTau" type="range" min="0.01" max="0.30" step="0.01" value="0.06">
+        </label>
+        <label id="zetaControl">Amortiguamiento ζ (adimensional) <span class="control-value"><output id="filterZetaValue"></output></span>
+          <input id="filterZeta" type="range" min="0.2" max="2" step="0.1" value="0.9">
+        </label>
+        <label id="omegaControl">Frecuencia natural ωₙ <span class="control-value"><output id="filterOmegaValue"></output></span>
+          <input id="filterOmega" type="range" min="2" max="30" step="1" value="14">
+        </label>
+        <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span>Mostrar puntos originales de MediaPipe</span></label>
+      </div>
+      <details class="calculation-details">
+        <summary>Ver cálculo numérico</summary>
+        <div id="firstCalculation" class="calculation-copy">
+          <p>Euler explícito, con el intervalo entre cuadros subdividido en pasos internos de hasta τ:</p>
+          <div class="calculation-formula">ritmo = (u − yAnterior) / τ<br>yNueva = yAnterior + Δt × ritmo</div>
+        </div>
+        <div id="secondCalculation" class="calculation-copy" hidden>
+          <p>Euler semiimplícito: se actualiza primero la velocidad y después la posición, con subpasos acotados por ωₙ y ζ.</p>
+          <div class="calculation-formula">a = ωₙ²(u − yAnterior) − 2ζωₙvAnterior<br>vNueva = vAnterior + aΔt<br>yNueva = yAnterior + vNuevaΔt</div>
+        </div>
+        <div id="offCalculation" class="calculation-copy" hidden><p>No se aplica una ecuación de filtro adicional; se devuelven las coordenadas de entrada.</p></div>
+      </details>
+    </section>
+  </section>
 </main>
 
 
