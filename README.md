@@ -4,16 +4,16 @@ Aplicación web para registrar señas estáticas y con movimiento, reconocerlas 
 
 ## Funciones
 
-- Detección de hasta dos manos y seguimiento/dibujo del rostro con MediaPipe Tasks Vision 0.10.14. El reconocimiento continúa usando una mano y señas enseñadas; no interpreta expresiones faciales ni señas bimanuales.
-- Registro de ejemplos de señas estáticas y movimientos; reconocimiento estático por KNN y de movimiento mediante DTW.
+- Detección sincronizada de ambas manos y rostro con MediaPipe Tasks Vision 0.10.14. Los coeficientes faciales, las relaciones geométricas y la orientación de la cabeza intervienen en el reconocimiento, sin inferir emociones ni identidad personal.
+- Registro de señas fijas y con movimiento, seleccionando explícitamente mano izquierda, derecha, ambas y/o rostro. Se reconocen únicamente ejemplos guardados en la biblioteca privada de Supabase.
 - Filtros manuales de primer orden y segundo orden amortiguado para landmarks, con comparación en vivo frente a la salida directa de MediaPipe y ecuaciones MathML explicadas en la interfaz.
-- Gestos básicos por reglas, controles de tolerancia y duración, y texto acumulado con lectura automática o manual, controles de espacio, borrar y limpiar.
-- Importación y exportación de señas en JSON, almacenamiento local y lectura en español mediante síntesis de voz del navegador.
+- Controles de tolerancia y duración, frase acumulada y lectura automática o manual, controles de espacio, borrar y limpiar. No hay gestos preprogramados ni señas de demostración.
+- Importación explícita y exportación de señas en JSON; las bibliotecas antiguas de `localStorage` no se cargan automáticamente.
 - Registro, inicio, restauración y cierre de sesión con Supabase Auth; recuperación de contraseña por correo.
 - Biblioteca de señas privada sincronizada por cuenta. El reconocimiento trabaja con los ejemplos ya cargados en memoria.
 - Importación confirmada de la biblioteca local o de archivos JSON; exportación JSON conservada.
 
-La comparación muestra distancias a ejemplos guardados y la reducción relativa de distancia para una misma etiqueta. No es una exactitud validada ni una probabilidad de acierto. En uso libre, la referencia es la candidata de la rama principal; se puede seleccionar una seña explícita para una evaluación controlada. Las reglas básicas sin ejemplo guardado no tienen distancia de referencia.
+La comparación muestra distancias a ejemplos guardados y la reducción relativa de distancia para una misma etiqueta. No es una exactitud validada ni una probabilidad de acierto. En uso libre, la referencia es la candidata de la rama principal; se puede seleccionar una seña explícita para una evaluación controlada. Una biblioteca vacía no produce palabras ni voz.
 
 La primera vista distribuye enseñanza y biblioteca a la izquierda, cámara y voz al centro, y comparación EDO con métricas de estabilidad a la derecha. La zona inferior contiene los ajustes generales y la explicación completa de la EDO con los parámetros activos y el cálculo numérico desplegable. Durante el registro de ejemplos, la comparación se desactiva y se aclara que no es una evaluación independiente.
 
@@ -21,7 +21,7 @@ El filtro de primer orden usa `dy/dt = (u - y) / tau`; el de segundo orden usa `
 
 La interfaz también informa una reducción de vibración calculada solo durante segmentos de baja velocidad raw y un retraso añadido estimado mediante correlación temporal de la trayectoria de la muñeca. Son mediciones observacionales de la sesión, no resultados garantizados ni el tiempo de cómputo o de confirmación de seña; cuando los datos no permiten calcularlas, se indica así.
 
-Los ejemplos nuevos guardan características raw y filtradas pareadas, el modelo y parámetros empleados, y coordenadas/tiempos originales para reprocesar cuando están disponibles. Los ejemplos antiguos siguen siendo compatibles, pero se identifican como capturados con el suavizado anterior o de procedencia desconocida. Las ramas raw y filtrada conservan la misma ventana temporal al comparar movimientos.
+Los ejemplos nuevos guardan coordenadas originales, componentes requeridos, lateralidad, presencia, tiempos relativos, características faciales y manuales utilizadas, y metadatos del filtro EDO. La comparación holística pondera explícitamente forma manual, posición relativa y rostro; el rostro pesa 0,5 cuando se combina con manos, su vector tiene escala 2,5 y el peso de la forma manual y la posición se reparte en 0,35/0,15. Estas ponderaciones son parámetros de comparación, no probabilidades. Los ejemplos antiguos permanecen compatibles como muestras de manos sin información facial inventada y se pueden volver a capturar con otros componentes.
 
 ## Estructura
 
@@ -35,7 +35,8 @@ js/
   supabaseConfig.js # URL y clave pública del proyecto (rellenar)
   sampleFormat.js # Validación y formato versionado de muestras
   camera.js       # Permisos, modelos, detección, dibujo y ciclo de cámara
-  recognition.js  # Características, reglas, KNN y DTW
+  holistic.js     # Características faciales, normalización y ponderaciones
+  recognition.js  # Comparación de componentes guardados y DTW sincronizado
   training.js     # Captura estática y registro de movimientos
   storage.js      # Persistencia, migración, importación y exportación
   ui.js           # Eventos y actualización de interfaz
@@ -67,7 +68,7 @@ Ejecuta las pruebas numéricas de los filtros y de la comparación con `npm test
 
 1. Abre la aplicación en `http://localhost:8000` o en un sitio HTTPS y permite el acceso a la cámara.
 2. Comprueba que desaparezca el mensaje de carga y que se dibujen los puntos al mostrar una mano.
-3. En **Enseñar una seña**, registra una seña fija y otra con movimiento; comprueba que aparezcan en **Mis señas** y que puedan reconocerse.
+3. En **Enseñar una seña**, selecciona las manos y/o el rostro que requiere la seña. Registra ejemplos fijos y con movimiento y comprueba que los ejemplos sincronizados aparezcan en **Mis señas** y se reconozcan.
 4. Prueba los controles de frase, los ajustes, la importación/exportación y la lectura por voz.
 5. Cierra sesión y vuelve a entrar para comprobar que los ejemplos siguen guardados.
 
@@ -77,15 +78,15 @@ Si el navegador deniega la cámara, revisa los permisos del sitio y recarga. La 
 
 La autenticación y la biblioteca en la nube requieren un proyecto Supabase configurado. Sin él, el formulario no permite iniciar sesión y no existe un modo de acceso de demostración. Google y Apple permanecen deshabilitados: sus flujos OAuth no están implementados.
 
-Al iniciar sesión, se carga la biblioteca una vez. Reconocimiento, filtros EDO, coordenadas filtradas y buffers de captura/comparación se mantienen en RAM; no se consulta Supabase por cuadro de cámara. Al finalizar una captura se guardan las coordenadas originales disponibles, características raw/filtradas, tiempos relativos y metadatos. No se suben videos ni imágenes.
+Al iniciar sesión, se carga la biblioteca una vez. Reconocimiento, filtros EDO, coordenadas filtradas y buffers de captura/comparación se mantienen en RAM; no se consulta Supabase por cuadro de cámara. Al finalizar una captura se guardan coordenadas y características raw/filtradas, tiempos relativos y metadatos. No se suben videos ni fotografías. Las capturas pendientes se identifican como pendientes y no intervienen en el reconocimiento hasta sincronizarse.
 
-El formato de muestra versión 1 se valida en `js/sampleFormat.js`: vectores de 63 características por mano fija; secuencias de movimiento de 24 vectores x 65 características y, cuando están disponibles, cuadros raw de 21 puntos x/y/z con lateralidad y tiempos crecientes en milisegundos relativos. Se comprueban dimensiones, valores finitos, orden temporal, duración máxima de 30 segundos y tamaño máximo de 4 MiB. Las capturas pequeñas se guardan en JSONB. La captura típica de movimiento de esta app (40 cuadros de 21 puntos raw y dos secuencias derivadas de 24 x 65) suele ser menor que 64 KiB; si el JSON serializado supera ese umbral se usa el bucket privado y la tabla conserva solo su ruta, sin duplicar el JSON. El límite del bucket también es 4 MiB.
+El formato de muestra versión 2 se valida en `js/sampleFormat.js`: conserva cuadros sincronizados de las ramas raw y EDO, coordenadas originales de manos/rostro, características faciales usadas, presencia, lateralidad, tiempos relativos y secuencias holísticas. Se validan dimensiones, valores finitos, orden temporal, duración máxima de 30 segundos y tamaño máximo de 12 MiB. Las muestras versión 1 se conservan y reconocen con su alcance original de manos, sin inventar datos faciales.
 
 Los ejemplos antiguos se importan como heredados. Si solo conservan características, se marcan sin coordenadas originales reprocesables; si no tienen metadatos del filtro anterior, su procesamiento se identifica como desconocido. Los ejemplos capturados con el suavizado anterior conservan la etiqueta de origen existente.
 
 Las muestras, señas y perfiles son privados por defecto. RLS comprueba el usuario autenticado y que cada muestra pertenezca a una seña de ese usuario; el bucket valida que la primera carpeta sea su UUID. La interfaz no puede saltarse las políticas enviando otro `owner_id`. No hay publicación pública implementada. La caché y la cola pendiente se guardan en IndexedDB con el UUID de usuario como clave; cerrar sesión limpia la biblioteca, frase, filtros y buffers de la RAM, pero conserva la copia de cuenta para recuperación/reintento.
 
-La configuración local permite el botón **Importar biblioteca local**. Antes de subir, muestra el número y la procedencia de los ejemplos y solicita confirmación. La transferencia es idempotente, no borra `localStorage` y puede reintentarse. El JSON importado también se incorpora a la cuenta autenticada. El estado de sincronización solo pasa a **Guardado en Supabase** después de respuesta satisfactoria del servidor.
+El botón **Importar señas locales…** lee las claves antiguas solo tras una acción explícita, muestra la procedencia y solicita confirmación. La transferencia es idempotente y no borra `localStorage`. El JSON importado también se incorpora a la cuenta autenticada. El estado solo pasa a **Guardado en Supabase** después de respuesta satisfactoria del servidor.
 
 ## Preparar Supabase
 
@@ -95,7 +96,7 @@ La configuración local permite el botón **Importar biblioteca local**. Antes d
    - `publishableKey`: clave `sb_publishable_...` del proyecto (se acepta la antigua clave pública `anon`).
 
    El archivo es código público descargable por los navegadores. Nunca pongas una clave `service_role`, secret key, contraseña de base de datos ni token de administración allí.
-3. Ejecuta, en orden, cada archivo `.sql` de `supabase/migrations/` en el SQL Editor de Supabase, o inicializa Supabase CLI si hace falta (`supabase init`) y aplica las migraciones versionadas (`supabase link --project-ref <project-ref>` y `supabase db push`). Elige un método para evitar aplicar dos veces la misma migración. La migración inicial crea las tablas, índices, restricciones, triggers, RLS, políticas de Storage y el bucket privado `sign-samples`.
+3. Para una instalación nueva, ejecuta, en orden, los archivos `.sql` de `supabase/migrations/`; para un proyecto ya instalado, ejecuta solo la nueva migración `20261016000100_holistic_samples.sql` (no vuelvas a ejecutar la inicial). También puedes usar Supabase CLI (`supabase link --project-ref <project-ref>` y `supabase db push`). La migración nueva amplía el formato y el límite del bucket privado, y elimina la preferencia de gestos básicos sin borrar las muestras existentes ni cambiar las políticas RLS.
 4. En **Authentication → URL Configuration**, configura:
    - **Site URL**: URL principal de producción (HTTPS).
    - **Redirect URLs** de desarrollo: `http://localhost:8000/**` (o el puerto/ruta real de tu servidor).
@@ -125,12 +126,12 @@ La comprobación de aislamiento requiere un proyecto desplegado y dos sesiones a
 ## Tecnologías y alcance
 
 - HTML, CSS y JavaScript nativo con módulos ES.
-- MediaPipe Tasks Vision para puntos de referencia de manos y rostro; los puntos faciales se siguen y dibujan, pero no se usan para reconocer expresiones o señas.
+- MediaPipe Tasks Vision para puntos de referencia de manos y rostro; las características faciales compactas intervienen únicamente en las señas que requieren rostro.
 - KNN para señas estáticas y DTW para secuencias de movimiento.
 - Integración seleccionable de filtros EDO, con referencia de entrenamiento pareada para comparar ambas ramas.
 - Web Speech API para la síntesis de voz, si está disponible en el navegador.
 
-El conjunto de gestos por reglas y las señas enseñadas son un prototipo, no un traductor completo de LSC. No se incluyen archivos en `assets/sounds/` porque la app no usa audio pregrabado.
+La aplicación solo reconoce señas guardadas y sincronizadas en la biblioteca privada de la cuenta; no incluye gestos por reglas ni señas de demostración. Es un prototipo, no un traductor completo de LSC. No se incluyen archivos en `assets/sounds/` porque la app no usa audio pregrabado.
 
 ## Integrantes
 

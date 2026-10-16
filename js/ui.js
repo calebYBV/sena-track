@@ -56,7 +56,7 @@ function renderList(){
   listEl.innerHTML = "";
   const items = Object.values(groups);
   if (!items.length){
-    listEl.innerHTML = '<li class="empty" style="background:none;padding:0">Aún no has enseñado ninguna seña.</li>';
+    listEl.innerHTML = '<li class="empty" style="background:none;padding:0">Tu biblioteca está vacía. Registra tu primera seña</li>';
     refreshReferences();
     return;
   }
@@ -70,12 +70,18 @@ function renderList(){
     icon.textContent = g.t === "m" ? "↔" : "◇";
     const name = document.createElement("span"); name.className = "name"; name.textContent = g.l;
     const examples = g.t === "s" ? state.samples : state.motions;
-    const hasLegacy = examples.some(example => example.l === g.l &&
-      example.source !== "paired-raw-and-filtered-v1");
+    const hasLegacy = examples.some(example => example.l === g.l && !example.components);
     const tag = document.createElement("span"); tag.className = "tag " + g.t + (hasLegacy ? " legacy" : "");
-    tag.textContent = (g.t === "s" ? "Fija" : "Movimiento") + (hasLegacy ? " · antigua/desconocida" : "");
+    const hasPending = examples.some(example => example.l === g.l && example.syncStatus === "pending");
+    tag.textContent = (g.t === "s" ? "Fija" : "Movimiento") +
+      (hasLegacy ? " · antigua, solo manos" : "") + (hasPending ? " · pendiente" : "");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
-    cnt.textContent = g.t === "s" ? `${Math.max(1, Math.round(g.n / CAPTURE_FRAMES))} capturas` : `${g.n} grabaciones`;
+    cnt.textContent = g.t === "s"
+      ? `${examples.filter(example => example.components).length +
+        (examples.some(example => !example.components)
+          ? Math.max(1, Math.round(examples.filter(example => !example.components).length / CAPTURE_FRAMES))
+          : 0)} capturas`
+      : `${g.n} grabaciones`;
     const b = document.createElement("button"); b.className = "btn line"; b.textContent = "Borrar";
     b.onclick = () => {
       void deleteSign(g.l, g.t).catch(error => {
@@ -117,7 +123,6 @@ function refreshGeneralControls(){
   refreshGeneralControls();
   void savePreferences();
 });
- $("rules").addEventListener("change", () => { void savePreferences(); });
 bindRange("tol", "tolVal", v => v.toFixed(2));
 bindRange("tolM", "tolMVal", v => v.toFixed(2));
 bindRange("dur", "durVal", v => v.toFixed(1) + " s");
@@ -176,7 +181,9 @@ for (const [id, key] of filterControls){
 function refreshReferences(){
   const select = $("evaluationReference");
   const selected = select.value;
-  const labels = new Set([...state.samples, ...state.motions].map(example => example.l));
+  const labels = new Set([...state.samples, ...state.motions]
+    .filter(example => example.syncStatus !== "pending")
+    .map(example => example.l));
   select.replaceChildren(new Option("Candidata de la rama principal", ""));
   for (const label of labels) select.add(new Option(label, label));
   if (labels.has(selected)) select.value = selected;
@@ -198,7 +205,7 @@ function setEvaluationEnabled(enabled){
     $("filteredPrediction").textContent = "—";
     $("rawDistance").textContent = "—";
     $("filteredDistance").textContent = "—";
-    $("distanceReduction").textContent = "No calculable";
+    $("distanceReduction").textContent = "No disponible";
     $("comparisonStatus").textContent = "Disponible al utilizar el Traductor";
     $("comparisonNote").textContent = "Las capturas de entrenamiento no se contabilizan como pruebas.";
     updateTrackingMetrics({
@@ -220,11 +227,11 @@ function renderComparison(){
   $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
   $("rawDistance").textContent = "—";
   $("filteredDistance").textContent = "—";
-  $("distanceReduction").textContent = "No calculable";
+  $("distanceReduction").textContent = "No disponible";
   if (!result?.detected){
     const requested = $("evaluationReference").value;
     $("referenceLabel").textContent = requested ? `Seña seleccionada: ${requested}` : "Referencia candidata: uso libre";
-    $("comparisonStatus").textContent = "Muestra una mano para comparar.";
+    $("comparisonStatus").textContent = "Muestra las partes requeridas para comparar.";
     $("comparisonNote").textContent = "La salida sin EDO es la de MediaPipe y puede incluir procesamiento interno.";
     return;
   }
@@ -257,7 +264,8 @@ function renderComparison(){
   }
   const reduction = calculateDistanceReduction(rawDistance, filteredDistance);
   if (reduction === null){
-    $("comparisonStatus").textContent = "No calculable: la distancia sin EDO es cero o demasiado pequeña";
+    $("distanceReduction").textContent = "No disponible";
+    $("comparisonStatus").textContent = "La comparación no está disponible: la distancia sin EDO es prácticamente cero.";
   } else {
     $("distanceReduction").textContent = `${reduction.toFixed(1)}%`;
     $("comparisonStatus").textContent = reduction > 0 ? "Mejor coincidencia" :
@@ -269,9 +277,8 @@ function renderComparison(){
       result.rawPrediction.label !== result.filteredPrediction.label){
     notes.push(`Las ramas discrepan: sin EDO predice “${result.rawPrediction.label}” y con EDO “${result.filteredPrediction.label}”.`);
   }
-  if (result.ruleOnly && !result.hasReference) notes.push("Sin referencia guardada para calcular la comparación.");
   if (result.legacyReference){
-    notes.push("La referencia incluye ejemplos antiguos capturados con suavizado previo o de procedencia desconocida. Para una evaluación controlada, elimina esa seña y vuelve a grabarla.");
+    notes.push("La referencia incluye ejemplos heredados de manos sin datos faciales; vuelve a capturarlos si quieres añadir rostro o ambas manos.");
   }
   notes.push("Una reducción de distancia no garantiza un reconocimiento correcto.");
   $("comparisonNote").textContent = notes.join(" ");
@@ -323,7 +330,7 @@ function showLocked(text, meta, ok, ms = 2500){
 }
 function show(r){
   if (performance.now() < state.readoutLock) return;
-  if (!r){ signEl.textContent = "No la reconozco"; signEl.className = "sign idle"; metaEl.textContent = ""; return; }
+  if (!r){ signEl.textContent = "Seña no reconocida"; signEl.className = "sign idle"; metaEl.textContent = ""; return; }
   signEl.textContent = r.label; signEl.className = "sign";
   metaEl.textContent = r.src + (r.conf != null
     ? ` · Puntuación del reconocedor: ${Math.round(r.conf * 100)}% (no es probabilidad validada)` : "");

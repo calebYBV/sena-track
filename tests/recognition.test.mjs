@@ -62,5 +62,6 @@ test("distance reduction reports improvements, regressions, equality, and zero b
   assert.equal(calculateDistanceReduction(10, 12), -20);
   assert.equal(calculateDistanceReduction(10, 10), 0);
   assert.equal(calculateDistanceReduction(0, 0.4), null);
+  assert.equal(calculateDistanceReduction(1e-7, 0), null);
   assert.equal(calculateDistanceReduction(Number.NaN, 1), null);
 });

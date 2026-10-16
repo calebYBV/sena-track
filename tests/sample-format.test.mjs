@@ -19,6 +19,79 @@ test("static captures preserve raw points and derived features in versioned JSON
   assert.ok(stored.bytes < SAMPLE_STORAGE_THRESHOLD_BYTES);
 });
 
+test("holistic format preserves required components, facial data and synchronized raw/EDO frames", () => {
+  const handPoints = landmarks();
+  const facePoints = Array.from({ length: 478 }, (_, index) =>
+    [index / 1000, index / 2000, index / 3000]);
+  const components = { left: true, right: false, face: true };
+  const frames = Array.from({ length: 8 }, (_, index) => ({
+    time: index * 20,
+    presence: { Left: true, Right: false, face: true, faceFeatures: true },
+    hands: { Left: handPoints },
+    faceLandmarks: facePoints,
+    faceFeatures: features(32)
+  }));
+  const descriptor = {
+    hands: { Left: features(63) },
+    placement: { Left: features(3) },
+    face: features(32)
+  };
+  const result = prepareSamplePayload({
+    l: "Seña registrada",
+    components,
+    h: descriptor,
+    rh: descriptor,
+    rawFrames: frames,
+    filteredFrames: structuredClone(frames),
+    source: "paired-raw-and-filtered-v2"
+  }, "static");
+  assert.equal(result.payload.kind, "static");
+  assert.equal(result.payload.formatVersion, 2);
+  assert.equal(result.payload.provenance.facialCoordinatesAvailable, true);
+  assert.equal(result.payload.provenance.facialFeaturesUsed, true);
+  assert.equal(result.payload.rawFrames[0].time, 0);
+  assert.equal(result.payload.filteredFrames.at(-1).time, 140);
+
+  assert.throws(() => prepareSamplePayload({
+    ...result.payload,
+    filteredFrames: result.payload.filteredFrames.map((frame, index) =>
+      index === 3 ? { ...frame, presence: { ...frame.presence, Left: false }, hands: {} } : frame)
+  }, "static"), /misma presencia y tiempo/);
+  assert.throws(() => prepareSamplePayload({
+    ...result.payload,
+    rawFrames: frames.map(frame => ({
+      ...frame, presence: { ...frame.presence, face: false, faceFeatures: false },
+      faceLandmarks: undefined, faceFeatures: undefined
+    }))
+  }, "static"), /componentes requeridos/);
+});
+
+test("available facial coordinates are retained even when expression features are unavailable", () => {
+  const facePoints = Array.from({ length: 478 }, (_, index) =>
+    [index / 1000, index / 2000, index / 3000]);
+  const frames = Array.from({ length: 8 }, (_, index) => ({
+    time: index * 20,
+    presence: { Left: true, Right: false, face: true, faceFeatures: false },
+    hands: { Left: landmarks() },
+    faceLandmarks: facePoints
+  }));
+  const handDescriptor = { hands: { Left: features(63) }, placement: null, face: null };
+  const sample = {
+    l: "Seña de una mano",
+    components: { left: true, right: false, face: false },
+    h: handDescriptor,
+    rh: handDescriptor,
+    rawFrames: frames,
+    filteredFrames: structuredClone(frames),
+    source: "paired-raw-and-filtered-v2"
+  };
+  const result = prepareSamplePayload(sample, "static");
+  assert.equal(result.payload.provenance.facialCoordinatesAvailable, true);
+  assert.equal(result.payload.provenance.facialFeaturesUsed, false);
+  assert.equal(result.payload.rawFrames[0].faceLandmarks.length, 478);
+  assert.equal("faceFeatures" in result.payload.rawFrames[0], false);
+});
+
 test("motion captures require finite, ordered raw landmarks and store relative times", () => {
   const sample = {
     l: "Gracias",

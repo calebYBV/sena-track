@@ -1,5 +1,6 @@
 import { HandLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 import { createEdoFilter, calculateVibrationReduction, estimateTrackingLag } from "./filters.js";
+import { extractFaceFeatures } from "./holistic.js";
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
@@ -10,7 +11,7 @@ const { $, video, canvas, ctx, statusEl } = dom;
 const { renderList, show, stability, showNoHand, lostHand, updateComparison,
   updateTrackingMetrics, setNote } = ui;
 const { refreshKind, refreshButtons, capture, tickMotion, resetTracking } = training;
-const { features, classify, ruleSign, staticDistances } = recognition;
+const { classifyFrame, holisticDistances } = recognition;
 let landmarker = null, faceLandmarker = null, drawing = null, stream = null;
 let started = false, frameId = null, startToken = 0, missingFrames = 0;
 let activeHand = null, lastTime = -1;
@@ -130,9 +131,9 @@ function resetFilterHistory(){
 window.addEventListener("pagehide", stop);
 
 function drawFace(timestamp, activeIdentities){
-  if (!faceLandmarker) return false;
+  if (!faceLandmarker) return null;
   const result = faceLandmarker.detectForVideo(video, timestamp);
-  if (!result.faceLandmarks.length) return false;
+  if (!result.faceLandmarks.length) return null;
   const raw = result.faceLandmarks[0].map(({ x, y, z }) => ({ x, y, z }));
   const filtered = edo.process(raw, "face", timestamp, state.filterConfig);
   activeIdentities.push("face");
@@ -141,7 +142,24 @@ function drawFace(timestamp, activeIdentities){
   if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
     drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
   }
-  return true;
+  const matrixData = result.facialTransformationMatrixes?.[0]?.data;
+  const matrix = matrixData ? Array.from(matrixData) : null;
+  const blendshapes = result.faceBlendshapes?.[0]?.categories;
+  const rawFeatures = extractFaceFeatures(raw, blendshapes, matrix,
+    video.videoWidth / video.videoHeight);
+  let filteredFeatures = null;
+  if (matrix?.length === 16 && blendshapes?.length){
+    const filteredMatrix = edo.process(matrix.map(value => ({ x: value, y: 0, z: 0 })),
+      "face:transformation-matrix", timestamp, state.filterConfig).map(point => point.x);
+    const filteredBlendshapes = edo.process(blendshapes.map(category =>
+      ({ x: category.score, y: 0, z: 0 })), "face:blendshapes", timestamp,
+    state.filterConfig).map((point, index) => ({ ...blendshapes[index], score: point.x }));
+    filteredFeatures = extractFaceFeatures(filtered, filteredBlendshapes, filteredMatrix,
+      video.videoWidth / video.videoHeight);
+    activeIdentities.push("face:transformation-matrix", "face:blendshapes");
+  }
+  return { rawLandmarks: raw, filteredLandmarks: filtered,
+    rawFeatures, filteredFeatures };
 }
 
 function chooseHand(results){
@@ -164,26 +182,22 @@ function chooseHand(results){
 }
 
 function compareStatic(track){
-  const rawFeatures = features(track.rawLandmarks, track.hand);
-  const filteredFeatures = features(track.filteredLandmarks, track.hand);
-  let rawPrediction = classify(rawFeatures, "raw");
-  let filteredPrediction = classify(filteredFeatures, "filtered");
-  if ($("rules").checked){
-    rawPrediction ||= ruleSign(track.rawLandmarks);
-    filteredPrediction ||= ruleSign(track.filteredLandmarks);
-  }
-  const rawDistances = staticDistances(rawFeatures, "raw");
-  const filteredDistances = staticDistances(filteredFeatures, "filtered");
+  const rawFrame = track.rawFrame;
+  const filteredFrame = track.filteredFrame;
+  const rawPrediction = classifyFrame(rawFrame, "raw", "static");
+  const filteredPrediction = classifyFrame(filteredFrame, "filtered", "static");
+  const rawDistances = holisticDistances(rawFrame, "raw", "static");
+  const filteredDistances = holisticDistances(filteredFrame, "filtered", "static");
   const requested = $("evaluationReference").value;
   const mainPrediction = state.filterConfig.model === "off" ? rawPrediction : filteredPrediction;
   const reference = requested || mainPrediction?.label;
   const examples = state.samples.filter(sample => sample.l === reference);
   updateComparison({
     kind: "static", detected: true, rawPrediction, filteredPrediction, rawDistances, filteredDistances,
-    hasReference: examples.length > 0, ruleOnly: mainPrediction?.src === "gesto básico",
-    legacyReference: examples.some(sample => !sample.r || !sample.source)
+    hasReference: examples.length > 0,
+    legacyReference: examples.some(sample => !sample.components)
   });
-  return { rawFeatures, filteredFeatures, rawPrediction, filteredPrediction };
+  return { rawPrediction, filteredPrediction };
 }
 
 /* ---------- Bucle principal ---------- */
@@ -196,66 +210,124 @@ function loop(){
     const results = landmarker.detectForVideo(video, timestamp);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const activeIdentities = [];
-    const handTracks = results.handedness.map((hand, index) => {
-      const identity = `hand:${hand[0].categoryName}`;
+    const handTracks = {};
+    results.handedness.forEach((hand, index) => {
+      const side = hand[0].categoryName;
+      if (!["Left", "Right"].includes(side)) return;
+      const identity = `hand:${side}`;
       activeIdentities.push(identity);
       const rawLandmarks = results.landmarks[index].map(({ x, y, z }) => ({ x, y, z }));
       const filteredLandmarks = edo.process(rawLandmarks, identity, timestamp, state.filterConfig);
-      return { hand: hand[0].categoryName, rawLandmarks, filteredLandmarks };
+      handTracks[side] = { hand: side, rawLandmarks, filteredLandmarks };
     });
     const selectedIndex = chooseHand(results);
-    if (selectedIndex !== null){
+    const selected = selectedIndex === null ? null : handTracks[results.handedness[selectedIndex][0].categoryName];
+    const face = drawFace(timestamp, activeIdentities);
+    const rawFrame = {
+      hands: Object.fromEntries(Object.entries(handTracks).map(([side, track]) => [side, track.rawLandmarks])),
+      faceLandmarks: face?.rawLandmarks,
+      faceFeatures: face?.rawFeatures
+    };
+    const filteredFrame = {
+      hands: Object.fromEntries(Object.entries(handTracks).map(([side, track]) => [side, track.filteredLandmarks])),
+      faceLandmarks: face?.filteredLandmarks,
+      faceFeatures: face?.filteredFeatures
+    };
+    const presence = {
+      Left: !!handTracks.Left,
+      Right: !!handTracks.Right,
+      face: !!face?.rawLandmarks && !!face?.filteredLandmarks,
+      faceFeatures: !!face?.rawFeatures && !!face?.filteredFeatures
+    };
+    const requiredMissing = state.samples.some(sample => sample.syncStatus !== "pending" &&
+      sample.components && ((sample.components.left && !presence.Left) ||
+        (sample.components.right && !presence.Right) ||
+        (sample.components.face && !presence.faceFeatures)));
+    $("componentStatus").textContent =
+      `Mano izquierda: ${presence.Left ? "detectada" : "fuera de cámara"} · ` +
+      `Mano derecha: ${presence.Right ? "detectada" : "fuera de cámara"} · ` +
+      `Rostro: ${presence.face ? "detectado" : "fuera de cámara"}`;
+    if (selected || face){
       missingFrames = 0;
-      const selected = {
-        ...handTracks[selectedIndex],
-        handedness: results.handedness[selectedIndex],
-        timestamp
-      };
-      for (const track of handTracks){
+      for (const track of Object.values(handTracks)){
         drawing.drawConnectors(track.filteredLandmarks, HandLandmarker.HAND_CONNECTIONS, { color: "#86e750", lineWidth: 4 });
         drawing.drawLandmarks(track.filteredLandmarks, { color: "#ffffff", fillColor: "#0c71c6", radius: 4, lineWidth: 2 });
         if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
           drawing.drawLandmarks(track.rawLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 2, lineWidth: 1 });
         }
       }
-      const faceAvailable = drawFace(timestamp, activeIdentities);
       if (state.motion){
         tickMotion({
-          rawLandmarks: selected.rawLandmarks,
-          filteredLandmarks: selected.filteredLandmarks,
-          handedness: [selected.handedness],
+          rawFrame, filteredFrame, presence,
+          rawLandmarks: selected?.rawLandmarks, filteredLandmarks: selected?.filteredLandmarks,
+          hand: selected?.hand,
           timestamp,
           handCount: results.landmarks.length,
-          faceAvailable
+          faceAvailable: presence.face
         });
       } else if (state.capState){
         capture({
-          raw: features(selected.rawLandmarks, selected.hand),
-          filtered: features(selected.filteredLandmarks, selected.hand),
-          rawLandmarks: selected.rawLandmarks,
+          rawFrame, filteredFrame,
           time: timestamp,
           handCount: results.landmarks.length,
-          faceAvailable,
-          handedness: selected.hand
+          faceAvailable: presence.face
         });
-      } else {
+      } else if (selected){
         updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
-        const predictions = compareStatic(selected);
+        const predictions = compareStatic({
+          ...selected, rawFrame, filteredFrame
+        });
         const mainPrediction = state.filterConfig.model === "off"
           ? predictions.rawPrediction : predictions.filteredPrediction;
+        if (!mainPrediction && requiredMissing){
+          $("sign").textContent = "Mano o rostro requerido fuera de cámara";
+          $("sign").className = "sign idle";
+          $("meta").textContent = "";
+          state.cand = null; state.candCount = 0; state.committed = null;
+          holdBar.style.width = "0";
+          updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+          edo.retain(activeIdentities);
+          if (started) frameId = requestAnimationFrame(loop);
+          return;
+        }
         show(mainPrediction); stability(mainPrediction);
+      } else {
+        const predictions = compareStatic({ rawFrame, filteredFrame });
+        const mainPrediction = state.filterConfig.model === "off"
+          ? predictions.rawPrediction : predictions.filteredPrediction;
+        if (!mainPrediction && requiredMissing){
+          $("sign").textContent = "Mano o rostro requerido fuera de cámara";
+          $("sign").className = "sign idle";
+          $("meta").textContent = "";
+          state.cand = null; state.candCount = 0; state.committed = null;
+          holdBar.style.width = "0";
+          updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+        } else {
+          show(mainPrediction);
+          stability(mainPrediction);
+        }
       }
     } else {
-      drawFace(timestamp, activeIdentities);
       if (missingFrames === 0){
         resetTracking();
         resetTrackingDiagnostics();
         state.cand = null; state.candCount = 0; state.committed = null;
       }
-      updateComparison({ detected: false });
+      const trainingCaptureMissing = (state.motion?.purpose === "train" &&
+        state.motion.phase === "rec") || state.capState?.phase === "rec";
+      const missingMessage = requiredMissing || trainingCaptureMissing
+        ? "Mano o rostro requerido fuera de cámara" : "Seña no reconocida";
+      $("sign").textContent = missingMessage;
+      $("sign").className = "sign idle";
+      $("meta").textContent = "";
+      updateComparison({ detected: false, reason: requiredMissing ? missingMessage : undefined });
       if (state.motion) tickMotion(null);
-      showNoHand();
       if (lostHand()) state.cand = null;
+      if (requiredMissing || trainingCaptureMissing){
+        $("sign").textContent = missingMessage;
+        $("sign").className = "sign idle";
+        $("meta").textContent = "";
+      } else showNoHand();
       missingFrames++;
     }
     edo.retain(activeIdentities);
@@ -319,6 +391,7 @@ async function start(){
     const faceOptions = delegate => ({
       baseOptions: { modelAssetPath: MODEL_FACE, delegate },
       runningMode: "VIDEO", numFaces: 1,
+      outputFaceBlendshapes: true, outputFacialTransformationMatrixes: true,
       minFaceDetectionConfidence: 0.6, minFacePresenceConfidence: 0.6, minTrackingConfidence: 0.65
     });
     try { faceLandmarker = await FaceLandmarker.createFromOptions(fileset, faceOptions("GPU")); }

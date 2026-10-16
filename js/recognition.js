@@ -1,5 +1,7 @@
+import { extractHolisticFeatures, holisticDistance } from "./holistic.js";
+
 export function calculateDistanceReduction(rawDistance, filteredDistance){
-  if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance) || rawDistance <= 1e-9) return null;
+  if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance) || rawDistance <= 1e-6) return null;
   return 100 * (rawDistance - filteredDistance) / rawDistance;
 }
 
@@ -99,6 +101,7 @@ function references(sample, branch){
 function staticDistances(f, branch){
   const best = {};
   for (const sample of state.samples){
+    if (sample.syncStatus === "pending") continue;
     const reference = references(sample, branch);
     if (!Array.isArray(reference) || reference.length !== f.length) continue;
     const distance = dist(f, reference);
@@ -109,6 +112,7 @@ function staticDistances(f, branch){
 function classify(f, branch = "filtered"){
   const ds = [];
   for (const sample of state.samples){
+    if (sample.syncStatus === "pending") continue;
     const reference = references(sample, branch);
     if (Array.isArray(reference) && reference.length === f.length){
       ds.push([dist(f, reference), sample.l]);
@@ -124,23 +128,75 @@ function classify(f, branch = "filtered"){
   if (score < 0.55) return null;
   return { label: best[0], conf: score, src: "seña fija" };
 }
-function ruleSign(lm){
-  const ar = video.videoWidth / video.videoHeight;
-  const P = lm.map(p => [p.x * ar, p.y]);
-  const d = (a, b) => Math.hypot(P[a][0] - P[b][0], P[a][1] - P[b][1]);
-  const [idx, mid, ring, pink] = [8, 12, 16, 20].map(t => d(t, 0) > d(t - 2, 0) * 1.05);
-  const thumb = d(4, 17) > d(2, 17) * 1.15;
-  const thumbUp = thumb && P[4][1] < P[5][1];
-  let label = null;
-  if (idx && mid && ring && pink && thumb) label = "Hola";
-  else if (idx && mid && ring && pink && !thumb) label = "Cuatro";
-  else if (!idx && !mid && !ring && !pink) label = thumbUp ? "Bien" : "Puño";
-  else if (idx && mid && ring && !pink && !thumb) label = "Tres";
-  else if (idx && mid && !ring && !pink) label = "Dos";
-  else if (idx && !mid && !ring && !pink && thumb) label = "L";
-  else if (idx && !mid && !ring && !pink && !thumb) label = "Uno";
-  else if (thumb && idx && !mid && !ring && pink) label = "Te quiero";
-  return label ? { label, conf: null, src: "gesto básico" } : null;
+
+function meanDescriptors(descriptors){
+  const average = key => {
+    const vectors = descriptors.map(item => item[key]).filter(Array.isArray);
+    if (!vectors.length) return null;
+    return vectors[0].map((_, index) =>
+      vectors.reduce((sum, vector) => sum + vector[index], 0) / vectors.length);
+  };
+  const hands = {};
+  for (const side of ["Left", "Right"]){
+    const vectors = descriptors.map(item => item.hands?.[side]).filter(Array.isArray);
+    if (vectors.length) hands[side] = vectors[0].map((_, index) =>
+      vectors.reduce((sum, vector) => sum + vector[index], 0) / vectors.length);
+  }
+  const placement = {};
+  for (const side of ["Left", "Right"]){
+    const vectors = descriptors.map(item => item.placement?.[side]).filter(Array.isArray);
+    if (vectors.length) placement[side] = vectors[0].map((_, index) =>
+      vectors.reduce((sum, vector) => sum + vector[index], 0) / vectors.length);
+  }
+  return { hands, placement: Object.keys(placement).length ? placement : null, face: average("face") };
+}
+
+function descriptorDistance(a, b, required){
+  return holisticDistance(a, b, required);
+}
+
+function interpolateDescriptor(a, b, fraction){
+  const interpolateArray = (x, y) => x.map((value, index) => value + (y[index] - value) * fraction);
+  const hands = {}, placement = {};
+  for (const side of ["Left", "Right"]){
+    if (a.hands?.[side] && b.hands?.[side]) hands[side] = interpolateArray(a.hands[side], b.hands[side]);
+    if (a.placement?.[side] && b.placement?.[side]) placement[side] = interpolateArray(a.placement[side], b.placement[side]);
+  }
+  return {
+    hands,
+    placement: Object.keys(placement).length ? placement : null,
+    face: a.face && b.face ? interpolateArray(a.face, b.face) : null
+  };
+}
+function resampleDescriptors(frames, count = 24, times = null){
+  if (!frames.length) return [];
+  const positions = times?.length === frames.length
+    ? times.map(time => (time - times[0]) / Math.max(1e-9, times.at(-1) - times[0]))
+    : frames.map((_, index) => index / Math.max(1, frames.length - 1));
+  return Array.from({ length: count }, (_, index) => {
+    const target = index / (count - 1);
+    let end = positions.findIndex(position => position >= target);
+    if (end < 0) end = frames.length - 1;
+    const start = Math.max(0, end - 1);
+    const span = positions[end] - positions[start];
+    const fraction = span > 0 ? (target - positions[start]) / span : 0;
+    return interpolateDescriptor(frames[start], frames[end], fraction);
+  });
+}
+function holisticDtw(a, b, required){
+  const n = a.length, m = b.length, infinity = Number.POSITIVE_INFINITY;
+  let previous = new Float64Array(m + 1).fill(infinity);
+  let current = new Float64Array(m + 1).fill(infinity);
+  previous[0] = 0;
+  for (let i = 1; i <= n; i++){
+    current[0] = infinity;
+    for (let j = 1; j <= m; j++){
+      current[j] = descriptorDistance(a[i - 1], b[j - 1], required) +
+        Math.min(previous[j], current[j - 1], previous[j - 1]);
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous[m] / (n + m);
 }
 function motionReferences(motion, branch){
   return branch === "raw" ? (motion.r || motion.s) : motion.s;
@@ -148,6 +204,7 @@ function motionReferences(motion, branch){
 function motionDistances(seq, branch){
   const best = {};
   for (const motion of state.motions){
+    if (motion.syncStatus === "pending") continue;
     const reference = motionReferences(motion, branch);
     if (!Array.isArray(reference)) continue;
     const distance = dtw(seq, reference);
@@ -166,6 +223,110 @@ function classifyMotion(seq, branch = "filtered"){
   return { label, conf: score, src: "seña con movimiento" };
 }
 
-return { features, classify, ruleSign, classifyMotion, toSequence, toSequencePair,
-  staticDistances, motionDistances, calculateDistanceReduction };
+function classifyFrame(frame, branch = "filtered", kind = "static"){
+  const isMotion = kind === "motion";
+  const examples = isMotion ? state.motions : state.samples;
+  const field = branch === "raw" ? (isMotion ? "rawHolisticSequence" : "rh") :
+    (isMotion ? "filteredHolisticSequence" : "h");
+  const entries = [];
+  const aspect = video.videoWidth / video.videoHeight;
+  for (const sample of examples){
+    if (sample.syncStatus === "pending") continue;
+    const hasReference = isMotion ? Array.isArray(sample[field]) :
+      sample[field] && typeof sample[field] === "object";
+    if (sample.components && hasReference){
+      const sourceFrames = branch === "raw" ? frame.rawFrames : frame.filteredFrames;
+      const queryFrames = isMotion
+        ? sourceFrames?.map(item => extractHolisticFeatures(item, aspect, sample.components))
+        : null;
+      const descriptor = isMotion ? null : extractHolisticFeatures(frame, aspect, sample.components);
+      const reference = isMotion ? sample[field] : [sample[field]];
+      if (isMotion && (!queryFrames?.length || queryFrames.some(item => !item))) continue;
+      if (!isMotion && !descriptor || !reference.length) continue;
+      const query = isMotion ? resampleDescriptors(queryFrames, 24, sourceFrames.map(item => item.time)) : descriptor;
+      if (isMotion){
+        if (query.length < 8) continue;
+        entries.push([holisticDtw(query, reference, sample.components), sample.l]);
+      } else {
+        entries.push([descriptorDistance(descriptor, reference[0], sample.components), sample.l]);
+      }
+      continue;
+    }
+    if (sample.components) continue;
+    if (isMotion){
+      const sequence = branch === "raw" ? frame.rawLegacySequence : frame.filteredLegacySequence;
+      const reference = branch === "raw" ? (sample.r || sample.s) : sample.s;
+      if (sequence && Array.isArray(reference)) entries.push([dtw(sequence, reference), sample.l]);
+    } else {
+      const storedSide = sample.captureMeta?.handedness || sample.handedness;
+      const handSide = storedSide
+        ? (frame.hands?.[storedSide] ? storedSide : null)
+        : frame.hands?.Left ? "Left" : frame.hands?.Right ? "Right" : null;
+      const reference = references(sample, branch);
+      if (!handSide || !Array.isArray(reference)) continue;
+      const featuresValue = features(frame.hands[handSide], handSide);
+      if (reference.length === featuresValue.length){
+        entries.push([dist(featuresValue, reference), sample.l]);
+      }
+    }
+  }
+  entries.sort((a, b) => a[0] - b[0]);
+  if (!entries.length) return null;
+  const threshold = Number.parseFloat($(isMotion ? "tolM" : "tol").value);
+  const [distance, label] = entries[0];
+  if (distance > threshold) return null;
+  const next = entries.find(([candidate, other]) => other !== label && candidate > distance);
+  const confidence = next ? next[0] / Math.max(1e-9, distance + next[0]) :
+    Math.max(0, 1 - distance / threshold);
+  return { label, conf: confidence, src: isMotion ? "seña guardada con movimiento" : "seña guardada" };
+}
+
+function holisticDistances(frame, branch = "filtered", kind = "static"){
+  const isMotion = kind === "motion";
+  const examples = isMotion ? state.motions : state.samples;
+  const field = branch === "raw" ? (isMotion ? "rawHolisticSequence" : "rh") :
+    (isMotion ? "filteredHolisticSequence" : "h");
+  const best = {};
+  const aspect = video.videoWidth / video.videoHeight;
+  for (const sample of examples){
+    if (sample.syncStatus === "pending") continue;
+    const hasReference = isMotion ? Array.isArray(sample[field]) :
+      sample[field] && typeof sample[field] === "object";
+    if (!sample.components || !hasReference) continue;
+    const sourceFrames = branch === "raw" ? frame.rawFrames : frame.filteredFrames;
+    const queryFrames = isMotion
+      ? sourceFrames?.map(item => extractHolisticFeatures(item, aspect, sample.components))
+      : null;
+    const descriptor = isMotion ? null : extractHolisticFeatures(frame, aspect, sample.components);
+    if (isMotion && (!queryFrames?.length || queryFrames.some(item => !item)) ||
+        !isMotion && !descriptor) continue;
+    const distance = isMotion
+      ? holisticDtw(resampleDescriptors(queryFrames, 24, sourceFrames.map(item => item.time)),
+        sample[field], sample.components)
+      : descriptorDistance(descriptor, sample[field][0], sample.components);
+    if (Number.isFinite(distance) &&
+        (best[sample.l] === undefined || distance < best[sample.l])) best[sample.l] = distance;
+  }
+  if (!isMotion){
+    for (const sample of examples){
+      if (sample.syncStatus === "pending" || sample.components) continue;
+      const storedSide = sample.captureMeta?.handedness || sample.handedness;
+      const side = storedSide
+        ? (frame.hands?.[storedSide] ? storedSide : null)
+        : frame.hands?.Left ? "Left" : frame.hands?.Right ? "Right" : null;
+      if (side){
+        const query = features(frame.hands[side], side);
+        const reference = references(sample, branch);
+        if (!Array.isArray(reference) || reference.length !== query.length) continue;
+        const distance = dist(query, reference);
+        if (best[sample.l] === undefined || distance < best[sample.l]) best[sample.l] = distance;
+      }
+    }
+  }
+  return best;
+}
+
+return { features, classify, classifyMotion, classifyFrame, holisticDistances, meanDescriptors,
+  resampleDescriptors, toSequence, toSequencePair, staticDistances, motionDistances,
+  calculateDistanceReduction };
 }

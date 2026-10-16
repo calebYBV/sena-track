@@ -32,28 +32,26 @@ export function createStorage({ state, dom, ui }){
   }
 
   function loadAll(){
+    lastLocalLibrary = { s: [], m: [], filters: null };
+    return lastLocalLibrary;
+  }
+
+  function readLegacyLocalLibrary(){
     for (const key of [STORE_KEY, PREVIOUS_KEY]){
       try {
         const library = parseLibrary(JSON.parse(localStorage.getItem(key)));
-        if (library){
-          lastLocalLibrary = library;
-          return library;
-        }
+        if (library) return library;
       } catch (error){
         console.warn(`No se pudo leer ${key} de localStorage.`, error);
       }
     }
     try {
       const old = JSON.parse(localStorage.getItem(OLD_KEY));
-      if (Array.isArray(old)){
-        lastLocalLibrary = { s: old, m: [], filters: null };
-        return lastLocalLibrary;
-      }
+      if (Array.isArray(old)) return { s: old, m: [], filters: null };
     } catch (error){
       console.warn(`No se pudo leer ${OLD_KEY} de localStorage.`, error);
     }
-    lastLocalLibrary = { s: [], m: [], filters: null };
-    return lastLocalLibrary;
+    return { s: [], m: [], filters: null };
   }
 
   function cacheKey(id = userId){
@@ -136,7 +134,6 @@ export function createStorage({ state, dom, ui }){
       motion_tolerance: Number($("tolM").value),
       capture_duration: Number($("dur").value),
       speech_enabled: $("speechEnabled").checked,
-      use_basic_gestures: $("rules").checked,
       show_raw_points: state.filterConfig.compareVisual
     };
   }
@@ -154,7 +151,6 @@ export function createStorage({ state, dom, ui }){
     $("tolM").value = settings.motion_tolerance ?? $("tolM").value;
     $("dur").value = settings.capture_duration ?? $("dur").value;
     $("speechEnabled").checked = settings.speech_enabled ?? $("speechEnabled").checked;
-    $("rules").checked = settings.use_basic_gestures ?? $("rules").checked;
     ui.refreshFilterControls();
     ui.refreshGeneralControls();
     state.onFilterChange?.();
@@ -170,7 +166,7 @@ export function createStorage({ state, dom, ui }){
     let records = [];
     if (signIds.length){
       const { data, error } = await client.from("sign_samples")
-        .select("id,sign_id,client_id,format_version,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path")
+        .select("id,sign_id,client_id,format_version,required_components,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path")
         .in("sign_id", signIds);
       if (error) throw error;
       records = data;
@@ -192,8 +188,10 @@ export function createStorage({ state, dom, ui }){
       }
       if (!payload || typeof payload !== "object") throw new Error(`La muestra ${record.id} no contiene datos.`);
       payload.l = sign.name;
+      payload.kind = sign.kind;
       payload.syncId = record.client_id;
-      if (payload.formatVersion !== SAMPLE_FORMAT_VERSION){
+      if (![1, SAMPLE_FORMAT_VERSION].includes(payload.formatVersion) ||
+          payload.formatVersion !== record.format_version){
         throw new Error(`La muestra ${record.id} usa una versión de formato no compatible.`);
       }
       validateSample(payload, sign.kind);
@@ -209,6 +207,10 @@ export function createStorage({ state, dom, ui }){
         height: record.image_height,
         capturedAt: record.captured_at
       };
+      if (record.format_version === 1){
+        payload.legacyScope = "hands-only";
+        payload.provenance = { ...(payload.provenance || {}), legacy: true, facialDataAvailable: false };
+      }
       (sign.kind === "motion" ? motions : samples).push(payload);
     }
 
@@ -231,8 +233,8 @@ export function createStorage({ state, dom, ui }){
     }
     const initialRevision = cached?.revision;
     if (cached?.pending){
-      state.samples = cached.samples;
-      state.motions = cached.motions;
+      state.samples = cached.samples.map(sample => ({ ...sample, syncStatus: "pending" }));
+      state.motions = cached.motions.map(sample => ({ ...sample, syncStatus: "pending" }));
       applySettings(cached.settings);
       setSyncStatus("Pendiente de sincronización", "pending");
       renderList();
@@ -248,8 +250,8 @@ export function createStorage({ state, dom, ui }){
       }
       const newerCache = await readCache(id);
       if (newerCache?.pending && newerCache.revision !== initialRevision){
-        state.samples = newerCache.samples;
-        state.motions = newerCache.motions;
+        state.samples = newerCache.samples.map(sample => ({ ...sample, syncStatus: "pending" }));
+        state.motions = newerCache.motions.map(sample => ({ ...sample, syncStatus: "pending" }));
         applySettings(newerCache.settings);
         setSyncStatus("Pendiente de sincronización", "pending");
         renderList();
@@ -384,13 +386,21 @@ export function createStorage({ state, dom, ui }){
     if (existingIds.has(clientId)) return;
     const { payload, bytes } = prepareSamplePayload(sample, kind);
     const meta = sample.captureMeta || {};
+    const legacyHand = meta.handedness || sample.handedness;
+    const legacyComponents = legacyHand === "Right"
+      ? { left: false, right: true, face: false }
+      : { left: true, right: false, face: false };
+    const recordedHandCount = Number(meta.handCount);
+    const fallbackHandCount = sample.components && !sample.components.left && !sample.components.right ? 0 : 1;
     const metadata = {
       owner_id: id,
       sign_id: signIdValue,
       client_id: clientId,
-      hand_count: Math.min(2, Math.max(1, Math.floor(Number(meta.handCount) || 1))),
+      hand_count: Math.min(2, Math.max(0, Math.floor(
+        Number.isFinite(recordedHandCount) ? recordedHandCount : fallbackHandCount))),
       face_available: Boolean(meta.faceAvailable),
       format_version: SAMPLE_FORMAT_VERSION,
+      required_components: sample.components || legacyComponents,
       mediapipe_model: meta.mediapipeModel || "hand_landmarker_float16_v1",
       processing: {
         source: sample.source || "legacy",
@@ -500,7 +510,14 @@ export function createStorage({ state, dom, ui }){
           cache.pending = false;
           cache.pendingDeletes = [];
           cache.settingsPending = false;
+          cache.samples = cache.samples.map(sample => ({ ...sample, syncStatus: "saved" }));
+          cache.motions = cache.motions.map(sample => ({ ...sample, syncStatus: "saved" }));
           await storeCache(cache, id);
+          if (userId === id){
+            state.samples = cache.samples;
+            state.motions = cache.motions;
+            renderList();
+          }
         } catch (error){
           succeeded = false;
           console.error("La sincronización con Supabase falló.", error);
@@ -613,15 +630,19 @@ export function createStorage({ state, dom, ui }){
       const key = `${kind}:${id}`;
       if (known.has(key)) return false;
       known.add(key);
-      (kind === "static" ? state.samples : state.motions).push(sample);
+      (kind === "static" ? state.samples : state.motions).push({ ...sample, syncStatus: "pending" });
       return true;
     }));
   }
 
   async function importLibrary(library){
-    for (const sample of library.s) prepareSamplePayload(sample, "static");
-    for (const sample of library.m) prepareSamplePayload(sample, "motion");
-    const imported = await importIntoState(library);
+    if (!userId) throw new Error("Inicia sesión para importar ejemplos a tu biblioteca privada de Supabase.");
+    const normalized = {
+      s: library.s.map(sample => prepareSamplePayload(sample, "static").payload),
+      m: library.m.map(sample => prepareSamplePayload(sample, "motion").payload),
+      filters: library.filters
+    };
+    const imported = await importIntoState(normalized);
     if (library.filters){
       state.filterConfig = normalizeFilterConfig(library.filters);
       state.onFilterChange?.();
@@ -633,12 +654,15 @@ export function createStorage({ state, dom, ui }){
       setNote("No se añadieron señas: esos ejemplos ya están en tu biblioteca.");
       return false;
     }
-    setNote(`${added} ejemplo(s) añadidos. La copia local se conserva.`);
-    await saveAll();
+    const saved = await saveAll();
+    setNote(saved
+      ? `${added} ejemplo(s) importados y guardados en Supabase.`
+      : `${added} ejemplo(s) pendientes de sincronización; todavía no se usan para reconocer.`);
     return true;
   }
 
   function serializeLocal(){
+    lastLocalLibrary = readLegacyLocalLibrary();
     const library = parseLibrary({
       s: lastLocalLibrary?.s || [],
       m: lastLocalLibrary?.m || [],
@@ -654,7 +678,7 @@ export function createStorage({ state, dom, ui }){
       return;
     }
     const imported = await importLibrary(library);
-    if (imported) setNote("Señas locales añadidas a la biblioteca; revisa el estado de sincronización. La copia original permanece en este navegador.");
+    if (imported) setNote("Señas locales importadas explícitamente; revisa el estado de sincronización.");
   }
 
   $("btnImportLocal").addEventListener("click", async () => {
@@ -666,7 +690,7 @@ export function createStorage({ state, dom, ui }){
       return;
     }
     const legacyCount = [...(library?.s || []), ...(library?.m || [])]
-      .filter(sample => sample.source !== "paired-raw-and-filtered-v1").length;
+      .filter(sample => !sample.components).length;
     const message = `Se transferirán ${staticCount} ejemplo(s) fijo(s) y ${motionCount} movimiento(s) desde este navegador a la cuenta autenticada. ${legacyCount ? `${legacyCount} ejemplo(s) son heredados: podrían contener solo características y no coordenadas originales reprocesables. ` : ""}La copia local no se borrará. ¿Confirmas la transferencia?`;
     if (confirm(message)){
       try {
@@ -684,7 +708,10 @@ export function createStorage({ state, dom, ui }){
   const exportButton = $("btnExport");
   exportButton.onclick = () => {
     const blob = new Blob([JSON.stringify({
-      version: 3, static: state.samples, motion: state.motions, filters: state.filterConfig
+      version: SAMPLE_FORMAT_VERSION,
+      static: state.samples.filter(sample => sample.syncStatus !== "pending"),
+      motion: state.motions.filter(sample => sample.syncStatus !== "pending"),
+      filters: state.filterConfig
     })], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -701,15 +728,8 @@ export function createStorage({ state, dom, ui }){
       const data = JSON.parse(await file.text());
       const library = Array.isArray(data) ? { s: data, m: [], filters: null } : parseLibrary(data);
       if (!library) throw new TypeError("El archivo no tiene el formato de biblioteca esperado.");
-      const validStatic = library.s.every(sample => sample?.l && Array.isArray(sample.f) && sample.f.length === 63 &&
-        sample.f.every(Number.isFinite) && (sample.r === undefined ||
-          (Array.isArray(sample.r) && sample.r.length === 63 && sample.r.every(Number.isFinite))) &&
-        (sample.lm === undefined || (Array.isArray(sample.lm) && sample.lm.length === 21 &&
-          sample.lm.every(point => Array.isArray(point) && point.length === 3 && point.every(Number.isFinite)))));
-      const validMotion = library.m.every(sample => sample?.l && Array.isArray(sample.s) &&
-        sample.s.length === 24 && sample.s.every(frame => Array.isArray(frame) &&
-          frame.length === 65 && frame.every(Number.isFinite)));
-      if (!validStatic || !validMotion) throw new TypeError("El archivo contiene muestras con dimensiones o valores numéricos inválidos.");
+      for (const sample of library.s) prepareSamplePayload(sample, "static");
+      for (const sample of library.m) prepareSamplePayload(sample, "motion");
       await importLibrary(library);
     } catch (error){
       console.error("No se pudo importar la biblioteca JSON.", error);
@@ -772,7 +792,6 @@ export function createStorage({ state, dom, ui }){
       $("tolM").value = "0.7";
       $("dur").value = "2";
       $("speechEnabled").checked = true;
-      $("rules").checked = true;
       ui.refreshGeneralControls();
     }
   };
