@@ -247,6 +247,15 @@ function loop(){
       `Mano izquierda: ${presence.Left ? "detectada" : "fuera de cámara"} · ` +
       `Mano derecha: ${presence.Right ? "detectada" : "fuera de cámara"} · ` +
       `Rostro: ${presence.face ? "detectado" : "fuera de cámara"}`;
+    const isCapturing = !!state.capState;
+    if (isCapturing){
+      capture({
+        rawFrame, filteredFrame, presence,
+        time: timestamp,
+        handCount: results.landmarks.length,
+        faceAvailable: presence.face
+      });
+    }
     if (selected || face){
       missingFrames = 0;
       for (const track of Object.values(handTracks)){
@@ -265,14 +274,7 @@ function loop(){
           handCount: results.landmarks.length,
           faceAvailable: presence.face
         });
-      } else if (state.capState){
-        capture({
-          rawFrame, filteredFrame,
-          time: timestamp,
-          handCount: results.landmarks.length,
-          faceAvailable: presence.face
-        });
-      } else if (selected){
+      } else if (!isCapturing && selected){
         updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
         const predictions = compareStatic({
           ...selected, rawFrame, filteredFrame
@@ -291,7 +293,7 @@ function loop(){
           return;
         }
         show(mainPrediction); stability(mainPrediction);
-      } else {
+      } else if (!isCapturing){
         const predictions = compareStatic({ rawFrame, filteredFrame });
         const mainPrediction = state.filterConfig.model === "off"
           ? predictions.rawPrediction : predictions.filteredPrediction;
