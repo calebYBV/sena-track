@@ -14,6 +14,7 @@ const { refreshKind, refreshButtons, capture, tickMotion, resetTracking } = trai
 const { compareStaticFrames } = recognition;
 let landmarker = null, faceLandmarker = null, drawing = null, stream = null;
 let started = false, frameId = null, startToken = 0, missingFrames = 0;
+let lastFrameError = null;
 let activeHand = null, lastTime = -1;
 const edo = createEdoFilter();
 let previousMeasurement = null;
@@ -108,6 +109,7 @@ function stop(){
   state.readoutLock = 0;
   missingFrames = 0;
   lastTime = -1;
+  lastFrameError = null;
   if (frameId !== null) cancelAnimationFrame(frameId);
   frameId = null;
   releaseMedia();
@@ -198,11 +200,8 @@ function compareStatic(track){
 }
 
 /* ---------- Bucle principal ---------- */
-function loop(){
-  frameId = null;
-  if (!started || !state.ready) return;
+function processFrame(){
   if (video.readyState >= 2 && video.currentTime !== lastTime){
-    lastTime = video.currentTime;
     const timestamp = performance.now();
     const results = landmarker.detectForVideo(video, timestamp);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -286,7 +285,7 @@ function loop(){
           holdBar.style.width = "0";
           updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
           edo.retain(activeIdentities);
-          if (started) frameId = requestAnimationFrame(loop);
+          lastTime = video.currentTime;
           return;
         }
         show(mainPrediction); stability(mainPrediction);
@@ -330,8 +329,44 @@ function loop(){
       missingFrames++;
     }
     edo.retain(activeIdentities);
+    lastTime = video.currentTime;
   }
-  if (started) frameId = requestAnimationFrame(loop);
+}
+
+function loop(){
+  frameId = null;
+  if (!started || !state.ready) return;
+  try {
+    processFrame();
+    if (lastFrameError){
+      if ($("note").textContent === lastFrameError) setNote("");
+      lastFrameError = null;
+      $("cameraIndicator").classList.remove("has-error");
+      $("cameraIndicator").classList.add("is-active");
+      $("cameraIndicatorText").textContent = "Cámara activa";
+    }
+  } catch (error){
+    const detail = error instanceof Error ? error.message : String(error);
+    const message = `Error de seguimiento; intentando recuperar: ${detail}`;
+    if (lastFrameError !== message){
+      console.error("Falló el procesamiento de un cuadro de cámara; el bucle seguirá activo.", error);
+      lastFrameError = message;
+    }
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    edo.reset();
+    resetTrackingDiagnostics();
+    resetTracking();
+    activeHand = null;
+    missingFrames = 0;
+    state.cand = null;
+    state.candCount = 0;
+    state.committed = null;
+    setNote(message);
+    $("cameraIndicator").classList.add("has-error");
+    $("cameraIndicatorText").textContent = "Recuperando seguimiento";
+  } finally {
+    if (started && state.ready) frameId = requestAnimationFrame(loop);
+  }
 }
 
 /* ---------- Arranque ---------- */
