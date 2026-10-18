@@ -6,6 +6,8 @@ export const DEFAULT_FILTER_CONFIG = Object.freeze({
   compareVisual: false
 });
 
+export const FILTER_TRACKING_PAUSE_MS = 500;
+
 export function normalizeFilterConfig(config){
   const candidate = { ...DEFAULT_FILTER_CONFIG, ...(config || {}) };
   return {
@@ -22,6 +24,11 @@ export function normalizeFilterConfig(config){
 
 const cloneLandmarks = points => points.map(({ x, y, z }) => ({ x, y, z }));
 const finite = value => Number.isFinite(value);
+const validFilterConfig = config =>
+  config && ["off", "first", "second"].includes(config.model) &&
+  finite(config.tau) && config.tau >= 0.01 && config.tau <= 0.3 &&
+  finite(config.zeta) && config.zeta >= 0.2 && config.zeta <= 2 &&
+  finite(config.omegaN) && config.omegaN >= 2 && config.omegaN <= 30;
 
 export function calculateVibrationReduction(raw, filtered){
   if (!finite(raw) || !finite(filtered) || raw <= 1e-9) return null;
@@ -82,19 +89,15 @@ export function createEdoFilter(){
       !finite(point.x) || !finite(point.y) || !finite(point.z))){
       throw new TypeError("Los landmarks deben contener coordenadas finitas.");
     }
+    if (!finite(timestamp)) throw new RangeError("El tiempo del filtro debe ser finito.");
+    if (!validFilterConfig(config)){
+      throw new RangeError("Los parámetros EDO están fuera de los límites permitidos.");
+    }
     if (config.model === "off") return cloneLandmarks(points);
-    if (config.model !== "first" && config.model !== "second"){
-      throw new RangeError(`Modelo EDO no válido: ${config.model}`);
-    }
-    if (!finite(timestamp) || !finite(config.tau) || config.tau <= 0 ||
-        !finite(config.zeta) || config.zeta <= 0 ||
-        !finite(config.omegaN) || config.omegaN <= 0){
-      throw new RangeError("El tiempo y los parámetros del filtro EDO deben ser positivos y finitos.");
-    }
     const signature = `${config.model}:${config.tau}:${config.zeta}:${config.omegaN}`;
     let track = tracks.get(identity);
     if (track && (track.signature !== signature || timestamp < track.timestamp ||
-        timestamp - track.timestamp > 500)){
+        timestamp - track.timestamp > FILTER_TRACKING_PAUSE_MS)){
       tracks.delete(identity);
       track = null;
     }
@@ -119,8 +122,8 @@ export function createEdoFilter(){
     }
     const dt = (timestamp - track.timestamp) / 1000;
     const maxStep = config.model === "first"
-      ? config.tau
-      : Math.min(0.5 / config.omegaN, 0.5 / (2 * config.zeta * config.omegaN));
+      ? config.tau / 4
+      : Math.min(0.1 / config.omegaN, 0.1 / (2 * config.zeta * config.omegaN));
     const steps = Math.ceil(dt / maxStep);
     const step = dt / steps;
     const filtered = points.map((point, index) => {

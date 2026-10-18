@@ -1,4 +1,5 @@
 import { calculateDistanceReduction } from "./recognition.js";
+import { countUniqueCaptures } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -76,12 +77,10 @@ function renderList(){
     tag.textContent = (g.t === "s" ? "Fija" : "Movimiento") +
       (hasLegacy ? " · antigua, solo manos" : "") + (hasPending ? " · pendiente" : "");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
+    const captureCount = countUniqueCaptures(examples);
     cnt.textContent = g.t === "s"
-      ? `${examples.filter(example => example.components).length +
-        (examples.some(example => !example.components)
-          ? Math.max(1, Math.round(examples.filter(example => !example.components).length / CAPTURE_FRAMES))
-          : 0)} capturas`
-      : `${g.n} grabaciones`;
+      ? `${captureCount} capturas`
+      : `${captureCount} grabaciones`;
     const b = document.createElement("button"); b.className = "btn line"; b.textContent = "Borrar";
     b.onclick = () => {
       void deleteSign(g.l, g.t).catch(error => {
@@ -200,6 +199,7 @@ function setEvaluationEnabled(enabled){
   for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
   if (!enabled){
     lastComparison = null;
+    $("distanceReduction").parentElement.classList.remove("is-positive", "is-negative", "is-neutral");
     $("referenceLabel").textContent = "Disponible al utilizar el Traductor";
     $("rawPrediction").textContent = "—";
     $("filteredPrediction").textContent = "—";
@@ -223,6 +223,9 @@ function predictionText(prediction){
 function renderComparison(){
   if ($("evaluationPanel").getAttribute("aria-disabled") === "true") return;
   const result = lastComparison;
+  const reductionReadout = $("distanceReduction").parentElement;
+  reductionReadout.classList.remove("is-positive", "is-negative", "is-neutral");
+  reductionReadout.setAttribute("aria-label", "Reducción de distancia no disponible");
   $("rawPrediction").textContent = predictionText(result?.rawPrediction);
   $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
   $("rawDistance").textContent = "—";
@@ -242,7 +245,8 @@ function renderComparison(){
   }
   const requested = $("evaluationReference").value;
   const mainPrediction = state.filterConfig.model === "off" ? result.rawPrediction : result.filteredPrediction;
-  const reference = requested || mainPrediction?.label;
+  const reference = requested || mainPrediction?.label ||
+    result.filteredPrediction?.label || result.rawPrediction?.label;
   $("referenceLabel").textContent = requested
     ? `Seña seleccionada por el usuario: ${requested}`
     : reference ? `Referencia candidata: ${reference}` : "Referencia candidata: aún no identificada";
@@ -265,13 +269,22 @@ function renderComparison(){
   const reduction = calculateDistanceReduction(rawDistance, filteredDistance);
   if (reduction === null){
     $("distanceReduction").textContent = "No disponible";
+    reductionReadout.classList.add("is-neutral");
+    reductionReadout.setAttribute("aria-label", "Reducción de distancia no disponible");
     $("comparisonStatus").textContent = "La comparación no está disponible: la distancia sin EDO es prácticamente cero.";
   } else {
     $("distanceReduction").textContent = `${reduction.toFixed(1)}%`;
-    $("comparisonStatus").textContent = reduction > 0 ? "Mejor coincidencia" :
-      reduction < 0 ? "Peor coincidencia" : "Sin cambio";
+    reductionReadout.classList.add(reduction > 0 ? "is-positive" : reduction < 0 ? "is-negative" : "is-neutral");
+    reductionReadout.setAttribute("aria-label", reduction > 0
+      ? `EDO acercó a la referencia: ${reduction.toFixed(1)} por ciento`
+      : reduction < 0
+        ? `EDO alejó de la referencia: ${reduction.toFixed(1)} por ciento`
+        : "EDO no cambió la distancia a la referencia");
+    $("comparisonStatus").textContent = reduction > 0 ? "EDO acercó a la referencia" :
+      reduction < 0 ? "EDO alejó de la referencia" : "EDO no cambió la distancia";
   }
   const notes = [];
+  notes.push("Raw y EDO se comparan con el mismo ejemplo guardado; el color indica distancia, no un acierto validado.");
   if (!requested) notes.push("La candidata no confirma la intención del usuario.");
   if (!requested && result.rawPrediction?.label && result.filteredPrediction?.label &&
       result.rawPrediction.label !== result.filteredPrediction.label){

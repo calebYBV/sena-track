@@ -1,0 +1,23 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { countUniqueCaptures } from "../js/sampleCount.js";
+
+test("capture counts deduplicate a repeated stored capture id", () => {
+  assert.equal(countUniqueCaptures([
+    { captureId: "capture-a", syncId: "stored-a" },
+    { captureId: "capture-a", syncId: "stored-copy-a" },
+    { syncId: "capture-b" }
+  ]), 2);
+});
+
+test("legacy examples without capture ids count as individual records", () => {
+  const first = { l: "A" }, second = { l: "A" };
+  assert.equal(countUniqueCaptures([first, second, first]), 2);
+});
+
+test("repeated rows from one timestamped capture count once", () => {
+  assert.equal(countUniqueCaptures([
+    { syncId: "row-a", captureMeta: { capturedAt: "2026-10-18T20:00:00.000Z" } },
+    { syncId: "row-b", captureMeta: { capturedAt: "2026-10-18T20:00:00.000Z" } }
+  ]), 1);
+});

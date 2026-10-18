@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculateVibrationReduction, createEdoFilter, DEFAULT_FILTER_CONFIG, estimateTrackingLag } from "../js/filters.js";
+import {
+  calculateVibrationReduction,
+  createEdoFilter,
+  DEFAULT_FILTER_CONFIG,
+  estimateTrackingLag,
+  FILTER_TRACKING_PAUSE_MS
+} from "../js/filters.js";
 
 const point = x => [{ x, y: x * 2, z: -x }];
 
@@ -13,6 +19,14 @@ test("first-order filter initializes from a valid sample and converges monotonic
   assert.ok(values.every(Number.isFinite));
   assert.ok(values[0] > 0 && values[0] < values[1] && values[1] < values[2] && values[2] < values[3]);
   assert.ok(values[3] < 1);
+});
+
+test("first-order filter uses explicit Euler with tau-quarter substeps and elapsed time", () => {
+  const filter = createEdoFilter();
+  const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.1 };
+  filter.process(point(0), "hand:Left", 0, config);
+  const result = filter.process(point(1), "hand:Left", 50, config)[0].x;
+  assert.ok(Math.abs(result - 0.4375) < 1e-12);
 });
 
 test("second-order filter remains finite and bounded for jumps and variable frame times", () => {
@@ -28,6 +42,14 @@ test("second-order filter remains finite and bounded for jumps and variable fram
   assert.ok(values.at(-1).x > values[0].x);
 });
 
+test("second-order filter uses semi-implicit Euler and conservative substeps", () => {
+  const filter = createEdoFilter();
+  const config = { ...DEFAULT_FILTER_CONFIG, model: "second", zeta: 1, omegaN: 10 };
+  filter.process(point(0), "face", 100, config);
+  const result = filter.process(point(1), "face", 110, config)[0].x;
+  assert.ok(Math.abs(result - 0.00724375) < 1e-12);
+});
+
 test("tracks are independent by identity and reset after loss, pauses, or configuration changes", () => {
   const filter = createEdoFilter();
   const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.1 };
@@ -40,9 +62,16 @@ test("tracks are independent by identity and reset after loss, pauses, or config
 
   filter.retain([]);
   assert.deepEqual(filter.process(point(0.7), "hand:Left", 60, config), point(0.7));
-  assert.deepEqual(filter.process(point(0.2), "hand:Left", 700, config), point(0.2));
+  assert.deepEqual(filter.process(point(0.2), "hand:Left", 60 + FILTER_TRACKING_PAUSE_MS + 1, config), point(0.2));
   const changed = { ...config, tau: 0.2 };
   assert.deepEqual(filter.process(point(0.4), "hand:Left", 730, changed), point(0.4));
+});
+
+test("invalid measurements and filter parameters are rejected", () => {
+  const filter = createEdoFilter();
+  const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.1 };
+  assert.throws(() => filter.process([{ x: Number.NaN, y: 0, z: 0 }], "face", 0, config), TypeError);
+  assert.throws(() => filter.process(point(0), "face", 0, { ...config, tau: 0.001 }), RangeError);
 });
 
 test("disabled filter returns independent raw landmark objects", () => {

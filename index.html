@@ -188,7 +188,7 @@
         </div>
         <div class="reduction-readout"><span>Reducción de distancia a la seña de referencia</span><strong id="distanceReduction">No disponible</strong></div>
         <p class="comparison-message" id="comparisonStatus">Muestra las partes requeridas para comparar.</p>
-        <p class="hint comparison-caveat">La reducción no es exactitud validada ni probabilidad de acierto.</p>
+        <p class="hint comparison-caveat">Verde: EDO redujo la distancia; rojo: la aumentó. Se compara el mismo ejemplo en ambas ramas; esto no demuestra un acierto ni es una probabilidad.</p>
         <p class="hint" id="comparisonNote">La salida sin EDO es la de MediaPipe y puede incluir procesamiento interno.</p>
       </section>
 
@@ -292,12 +292,12 @@
       <details class="calculation-details">
         <summary>Ver cálculo numérico</summary>
         <div id="firstCalculation" class="calculation-copy">
-          <p>Euler explícito, con el intervalo entre cuadros subdividido en pasos internos de hasta τ:</p>
-          <div class="calculation-formula">ritmo = (u − yAnterior) / τ<br>yNueva = yAnterior + Δt × ritmo</div>
+          <p>Euler explícito; se divide el intervalo entre cuadros para que cada subpaso sea como máximo τ/4:</p>
+          <div class="calculation-formula">n = max(1, ceil(dt / (τ/4))) · h = dt/n<br>Repetir n veces: y = y + h × (u − y) / τ</div>
         </div>
         <div id="secondCalculation" class="calculation-copy" hidden>
-          <p>Euler semiimplícito: se actualiza primero la velocidad y después la posición, con subpasos acotados por ωₙ y ζ.</p>
-          <div class="calculation-formula">a = ωₙ²(u − yAnterior) − 2ζωₙvAnterior<br>vNueva = vAnterior + aΔt<br>yNueva = yAnterior + vNuevaΔt</div>
+          <p>Euler semiimplícito: primero se actualiza la velocidad y luego la posición. El tiempo entre cuadros se divide en subpasos conservadores.</p>
+          <div class="calculation-formula">hMax = min(0.1/ωₙ, 0.1/(2ζωₙ)) · n = max(1, ceil(dt/hMax)) · h = dt/n<br>a = ωₙ²(u − y) − 2ζωₙv<br>v = v + h × a · y = y + h × v</div>
         </div>
         <div id="offCalculation" class="calculation-copy" hidden><p>No se aplica una ecuación de filtro adicional; se devuelven las coordenadas de entrada.</p></div>
       </details>

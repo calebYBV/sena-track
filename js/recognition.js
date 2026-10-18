@@ -145,7 +145,7 @@ function evaluateStaticFrame(frame, branch){
       const key = `${Number(sample.components.left)}${Number(sample.components.right)}${Number(sample.components.face)}`;
       const descriptor = descriptorFor(key, () => extractHolisticFeatures(frame, aspect, sample.components));
       if (!descriptor) continue;
-      entries.push([descriptorDistance(descriptor, reference, sample.components), sample.l]);
+      entries.push([descriptorDistance(descriptor, reference, sample.components), sample.l, sample]);
       continue;
     }
     const reference = references(sample, branch);
@@ -157,7 +157,7 @@ function evaluateStaticFrame(frame, branch){
     const descriptor = descriptorFor(`legacy:${handSide}`, () =>
       features(frame.hands[handSide], handSide));
     if (reference.length === descriptor.length){
-      entries.push([dist(descriptor, reference), sample.l]);
+      entries.push([dist(descriptor, reference), sample.l, sample]);
     }
   }
 
@@ -168,27 +168,48 @@ function evaluateStaticFrame(frame, branch){
       distances[label] = distance;
     }
   }
-  if (!entries.length) return { prediction: null, distances };
+  if (!entries.length) return { prediction: null, distances, entries };
   const threshold = Number.parseFloat($("tol").value);
   const [distance, label] = entries[0];
-  if (distance > threshold) return { prediction: null, distances };
+  if (distance > threshold) return { prediction: null, distances, entries };
   const next = entries.find(([candidate, other]) => other !== label && candidate > distance);
   const confidence = next ? next[0] / Math.max(1e-9, distance + next[0]) :
     Math.max(0, 1 - distance / threshold);
   return {
     prediction: { label, conf: confidence, src: "seña guardada" },
-    distances
+    distances,
+    entries
   };
+}
+
+function pairedDistances(rawEntries, filteredEntries){
+  const filteredBySample = new Map(filteredEntries.map(entry => [entry[2], entry[0]]));
+  const candidates = new Map();
+  for (const [rawDistance, label, sample] of rawEntries){
+    const filteredDistance = filteredBySample.get(sample);
+    if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)) continue;
+    const candidate = { sample, rawDistance, filteredDistance };
+    const current = candidates.get(label);
+    if (!current || rawDistance + filteredDistance < current.rawDistance + current.filteredDistance){
+      candidates.set(label, candidate);
+    }
+  }
+  const rawDistances = {}, filteredDistances = {};
+  for (const [label, candidate] of candidates){
+    rawDistances[label] = candidate.rawDistance;
+    filteredDistances[label] = candidate.filteredDistance;
+  }
+  return { rawDistances, filteredDistances };
 }
 
 function compareStaticFrames(rawFrame, filteredFrame){
   const raw = evaluateStaticFrame(rawFrame, "raw");
   const filtered = evaluateStaticFrame(filteredFrame, "filtered");
+  const paired = pairedDistances(raw.entries, filtered.entries);
   return {
     rawPrediction: raw.prediction,
     filteredPrediction: filtered.prediction,
-    rawDistances: raw.distances,
-    filteredDistances: filtered.distances
+    ...paired
   };
 }
 
@@ -391,7 +412,68 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
   return best;
 }
 
+function pairedHolisticDistances(frame, kind = "static"){
+  const examples = kind === "motion" ? state.motions : state.samples;
+  const aspect = video.videoWidth / video.videoHeight;
+  const rawFrame = frame.rawFrame || frame;
+  const filteredFrame = frame.filteredFrame || frame;
+  const candidates = new Map();
+  for (const sample of examples){
+    if (sample.syncStatus === "pending") continue;
+    let rawDistance, filteredDistance;
+    if (sample.components && kind === "static"){
+      const rawReference = sample.rh, filteredReference = sample.h;
+      if (!rawReference || !filteredReference) continue;
+      const rawDescriptor = extractHolisticFeatures(rawFrame, aspect, sample.components);
+      const filteredDescriptor = extractHolisticFeatures(filteredFrame, aspect, sample.components);
+      if (!rawDescriptor || !filteredDescriptor) continue;
+      rawDistance = descriptorDistance(rawDescriptor, rawReference, sample.components);
+      filteredDistance = descriptorDistance(filteredDescriptor, filteredReference, sample.components);
+    } else if (sample.components && kind === "motion"){
+      const rawSources = frame.rawFrames, filteredSources = frame.filteredFrames;
+      if (!Array.isArray(rawSources) || !Array.isArray(filteredSources) ||
+          rawSources.length !== filteredSources.length ||
+          !Array.isArray(sample.rawHolisticSequence) || !Array.isArray(sample.filteredHolisticSequence)) continue;
+      const rawDescriptors = rawSources.map(item => extractHolisticFeatures(item, aspect, sample.components));
+      const filteredDescriptors = filteredSources.map(item => extractHolisticFeatures(item, aspect, sample.components));
+      if (rawDescriptors.length < 8 || rawDescriptors.some(item => !item) ||
+          filteredDescriptors.some(item => !item)) continue;
+      const times = rawSources.map(item => item.time);
+      if (!times.every(Number.isFinite) || filteredSources.some((item, index) => item.time !== times[index])) continue;
+      rawDistance = holisticDtw(
+        resampleDescriptors(rawDescriptors, 24, times), sample.rawHolisticSequence, sample.components);
+      filteredDistance = holisticDtw(
+        resampleDescriptors(filteredDescriptors, 24, times), sample.filteredHolisticSequence, sample.components);
+    } else if (!sample.components && kind === "motion"){
+      const rawReference = sample.r || sample.s, filteredReference = sample.s;
+      if (!Array.isArray(frame.rawLegacySequence) || !Array.isArray(frame.filteredLegacySequence) ||
+          !Array.isArray(rawReference) || !Array.isArray(filteredReference)) continue;
+      rawDistance = dtw(frame.rawLegacySequence, rawReference);
+      filteredDistance = dtw(frame.filteredLegacySequence, filteredReference);
+    } else {
+      const side = sample.captureMeta?.handedness || sample.handedness ||
+        (rawFrame.hands?.Left ? "Left" : rawFrame.hands?.Right ? "Right" : null);
+      if (!side || !rawFrame.hands?.[side] || !filteredFrame.hands?.[side]) continue;
+      const rawReference = sample.r || sample.f, filteredReference = sample.f;
+      if (!Array.isArray(rawReference) || !Array.isArray(filteredReference)) continue;
+      rawDistance = dist(features(rawFrame.hands[side], side), rawReference);
+      filteredDistance = dist(features(filteredFrame.hands[side], side), filteredReference);
+    }
+    if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)) continue;
+    const current = candidates.get(sample.l);
+    if (!current || rawDistance + filteredDistance < current.rawDistance + current.filteredDistance){
+      candidates.set(sample.l, { rawDistance, filteredDistance });
+    }
+  }
+  const rawDistances = {}, filteredDistances = {};
+  for (const [label, pair] of candidates){
+    rawDistances[label] = pair.rawDistance;
+    filteredDistances[label] = pair.filteredDistance;
+  }
+  return { rawDistances, filteredDistances };
+}
+
 return { features, classify, classifyMotion, classifyFrame, holisticDistances, meanDescriptors,
   resampleDescriptors, toSequence, toSequencePair, staticDistances, motionDistances,
-  compareStaticFrames, calculateDistanceReduction };
+  compareStaticFrames, pairedHolisticDistances, calculateDistanceReduction };
 }

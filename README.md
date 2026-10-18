@@ -17,9 +17,11 @@ La comparación muestra distancias a ejemplos guardados y la reducción relativa
 
 La primera vista distribuye enseñanza y biblioteca a la izquierda, cámara y voz al centro, y comparación EDO con métricas de estabilidad a la derecha. La zona inferior contiene los ajustes generales y la explicación completa de la EDO con los parámetros activos y el cálculo numérico desplegable. Durante el registro de ejemplos, la comparación se desactiva y se aclara que no es una evaluación independiente.
 
-El filtro de primer orden usa `dy/dt = (u - y) / tau`; el de segundo orden usa `y'' + 2*zeta*omegaN*y' + omegaN²*y = omegaN²*u`. Ambos emplean el tiempo real entre cuadros, estados independientes por mano y rostro y pasos internos acotados. El filtro no altera el video. La rama sin filtro sigue siendo la salida de MediaPipe y puede incluir su propio procesamiento interno.
+El filtro de primer orden integra `dy/dt = (u - y) / tau` con Euler explícito y subpasos `h <= tau/4`. El de segundo orden integra `a = omegaN²*(u-y) - 2*zeta*omegaN*v` mediante Euler semiimplícito, actualizando primero `v` y luego `y`, con `h <= min(0.1/omegaN, 0.1/(2*zeta*omegaN))`. Ambos usan el tiempo monotónico real entre cuadros, conservan estado independiente por mano, rostro, punto y eje, se inicializan desde la primera medición válida y reinician tras una pérdida o pausa superior a 500 ms. El filtro no altera el video. La rama sin filtro sigue siendo la salida de MediaPipe y puede incluir su propio procesamiento interno. Cada captura conserva sus coordenadas sincronizadas, parámetros y metadatos del método/versionado del filtro.
 
-La interfaz también informa una reducción de vibración calculada solo durante segmentos de baja velocidad raw y un retraso añadido estimado mediante correlación temporal de la trayectoria de la muñeca. Son mediciones observacionales de la sesión, no resultados garantizados ni el tiempo de cómputo o de confirmación de seña; cuando los datos no permiten calcularlas, se indica así.
+La comparación de distancias selecciona un mismo ejemplo guardado por etiqueta para las ramas raw y EDO. El indicador se pone verde si EDO reduce la distancia y rojo si la aumenta; esto mide cercanía a la referencia, no un acierto ni una mejora validada del reconocimiento. En modo automático la etiqueta se presenta como candidata y no confirma la intención del usuario. La interfaz también informa una reducción de vibración calculada solo durante segmentos de baja velocidad raw y un retraso añadido estimado mediante correlación temporal de la trayectoria de la muñeca. Son mediciones observacionales de la sesión, no resultados garantizados ni el tiempo de cómputo o de confirmación de seña; cuando los datos no permiten calcularlas, se indica así.
+
+El contador de **Mis señas** cuenta registros de captura únicos, deduplicados por su identificador de captura o de sincronización; en muestras heredadas sin esos identificadores, cuenta cada registro como un ejemplo. No infiere capturas a partir de la cantidad de cuadros de una muestra.
 
 Los ejemplos nuevos guardan coordenadas originales, componentes requeridos, lateralidad, presencia, tiempos relativos, características faciales y manuales utilizadas, y metadatos del filtro EDO. La comparación holística pondera explícitamente forma manual, posición relativa y rostro; el rostro pesa 0,5 cuando se combina con manos, su vector tiene escala 2,5 y el peso de la forma manual y la posición se reparte en 0,35/0,15. Estas ponderaciones son parámetros de comparación, no probabilidades. Los ejemplos antiguos permanecen compatibles como muestras de manos sin información facial inventada y se pueden volver a capturar con otros componentes.
 
@@ -38,6 +40,7 @@ js/
   holistic.js     # Características faciales, normalización y ponderaciones
   recognition.js  # Comparación de componentes guardados y DTW sincronizado
   training.js     # Captura estática y registro de movimientos
+  sampleCount.js  # Conteo único de capturas guardadas
   storage.js      # Persistencia, migración, importación y exportación
   ui.js           # Eventos y actualización de interfaz
   filters.js      # Filtros EDO de primer y segundo orden

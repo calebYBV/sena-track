@@ -5,9 +5,17 @@ export function createTraining({ state, dom, ui, storage, recognition }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
 const { setNote, renderList, showLocked, addToPhrase, updateComparison, setEvaluationEnabled } = ui;
 const { saveAll } = storage;
-const { toSequencePair, classifyFrame, holisticDistances, meanDescriptors,
+const { toSequencePair, classifyFrame, meanDescriptors,
   resampleDescriptors } = recognition;
 const N_STEPS = 24, CAPTURE_FRAMES = 40;
+function filterMetadata(config){
+  return {
+    ...config,
+    method: config.model === "first" ? "explicit-euler-substeps-tau-quarter" :
+      config.model === "second" ? "semi-implicit-euler-substeps-conservative" : "disabled",
+    version: 1
+  };
+}
 const components = () => ({
   left: $("requireLeft").checked,
   right: $("requireRight").checked,
@@ -67,7 +75,8 @@ function startMotion(purpose, label){
   if (purpose === "train") setCaptureProgress("Preparando movimiento", 0, parseFloat($("dur").value) * 1000, "0 cuadros");
   state.motion = {
     purpose, label, phase: "count", frames: [], ms: parseFloat($("dur").value) * 1000,
-    t0: 0, captureStartedAt: null, capturedAt: new Date().toISOString(),
+    t0: 0, captureStartedAt: null, captureId: crypto.randomUUID(),
+    capturedAt: new Date().toISOString(),
     components: purpose === "train" ? components() : null
   };
   if (purpose === "train" && !state.motion.components.left &&
@@ -164,8 +173,8 @@ function finishMotion(){
       asStoredFrame(frame[field], frame.time - m.t0, frame.presence));
     const sample = {
       l: m.label, kind: "motion", formatVersion: SAMPLE_FORMAT_VERSION,
-      components: required, source: "paired-raw-and-filtered-v2",
-      filter: { ...state.filterConfig }, captureMeta,
+      components: required, source: "paired-raw-and-filtered-v2", captureId: m.captureId,
+      filter: filterMetadata(state.filterConfig), captureMeta,
       rawFrames: storedFrames("rawFrame"), filteredFrames: storedFrames("filteredFrame"),
       rawHolisticSequence: resampleDescriptors(rawSequence, N_STEPS,
         m.frames.map(frame => frame.time - m.t0)),
@@ -187,8 +196,8 @@ function finishMotion(){
     setCaptureProgress("Captura completada", m.ms, m.ms, `${m.frames.length} cuadros`);
   } else if (m.purpose === "recognize" && captureComplete){
     const rawFrame = {
-      rawFrames: m.frames.map(frame => frame.rawFrame),
-      filteredFrames: m.frames.map(frame => frame.filteredFrame),
+      rawFrames: m.frames.map(frame => ({ ...frame.rawFrame, time: frame.time - m.t0 })),
+      filteredFrames: m.frames.map(frame => ({ ...frame.filteredFrame, time: frame.time - m.t0 })),
       rawLegacySequence: null, filteredLegacySequence: null
     };
     const pair = legacyMotionPair(m.frames, aspect);
@@ -199,8 +208,7 @@ function finishMotion(){
     const raw = classifyFrame(rawFrame, "raw", "motion");
     const filtered = classifyFrame(rawFrame, "filtered", "motion");
     const main = state.filterConfig.model === "off" ? raw : filtered;
-    const rawDistances = holisticDistances(rawFrame, "raw", "motion");
-    const filteredDistances = holisticDistances(rawFrame, "filtered", "motion");
+    const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(rawFrame, "motion");
     const ref = $("evaluationReference").value || main?.label;
     const examples = state.motions.filter(example => example.l === ref);
     updateComparison({ kind: "motion", detected: true, rawPrediction: raw, filteredPrediction: filtered,
@@ -302,13 +310,14 @@ function capture(f){
       l: capture.label,
       kind: "static",
       formatVersion: SAMPLE_FORMAT_VERSION,
+      captureId: capture.captureId,
       components: capture.components,
       h: recognition.meanDescriptors(capture.filteredDescriptors),
       rh: recognition.meanDescriptors(capture.rawDescriptors),
       rawFrames: capture.rawFrames,
       filteredFrames: capture.filteredFrames,
       source: "paired-raw-and-filtered-v2",
-      filter: { ...state.filterConfig },
+      filter: filterMetadata(state.filterConfig),
       captureMeta: {
         handCount: Math.max(...capture.rawFrames.map(frame =>
           Number(frame.presence.Left) + Number(frame.presence.Right))),
