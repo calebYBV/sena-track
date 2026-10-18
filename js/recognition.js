@@ -129,6 +129,69 @@ function classify(f, branch = "filtered"){
   return { label: best[0], conf: score, src: "seña fija" };
 }
 
+function evaluateStaticFrame(frame, branch){
+  const entries = [];
+  const aspect = video.videoWidth / video.videoHeight;
+  const descriptorCache = new Map();
+  const descriptorFor = (key, create) => {
+    if (!descriptorCache.has(key)) descriptorCache.set(key, create());
+    return descriptorCache.get(key);
+  };
+  for (const sample of state.samples){
+    if (sample.syncStatus === "pending") continue;
+    if (sample.components){
+      const reference = sample[branch === "raw" ? "rh" : "h"];
+      if (!reference || typeof reference !== "object") continue;
+      const key = `${Number(sample.components.left)}${Number(sample.components.right)}${Number(sample.components.face)}`;
+      const descriptor = descriptorFor(key, () => extractHolisticFeatures(frame, aspect, sample.components));
+      if (!descriptor) continue;
+      entries.push([descriptorDistance(descriptor, reference, sample.components), sample.l]);
+      continue;
+    }
+    const reference = references(sample, branch);
+    const storedSide = sample.captureMeta?.handedness || sample.handedness;
+    const handSide = storedSide
+      ? (frame.hands?.[storedSide] ? storedSide : null)
+      : frame.hands?.Left ? "Left" : frame.hands?.Right ? "Right" : null;
+    if (!handSide || !Array.isArray(reference)) continue;
+    const descriptor = descriptorFor(`legacy:${handSide}`, () =>
+      features(frame.hands[handSide], handSide));
+    if (reference.length === descriptor.length){
+      entries.push([dist(descriptor, reference), sample.l]);
+    }
+  }
+
+  entries.sort((a, b) => a[0] - b[0]);
+  const distances = {};
+  for (const [distance, label] of entries){
+    if (distances[label] === undefined || distance < distances[label]){
+      distances[label] = distance;
+    }
+  }
+  if (!entries.length) return { prediction: null, distances };
+  const threshold = Number.parseFloat($("tol").value);
+  const [distance, label] = entries[0];
+  if (distance > threshold) return { prediction: null, distances };
+  const next = entries.find(([candidate, other]) => other !== label && candidate > distance);
+  const confidence = next ? next[0] / Math.max(1e-9, distance + next[0]) :
+    Math.max(0, 1 - distance / threshold);
+  return {
+    prediction: { label, conf: confidence, src: "seña guardada" },
+    distances
+  };
+}
+
+function compareStaticFrames(rawFrame, filteredFrame){
+  const raw = evaluateStaticFrame(rawFrame, "raw");
+  const filtered = evaluateStaticFrame(filteredFrame, "filtered");
+  return {
+    rawPrediction: raw.prediction,
+    filteredPrediction: filtered.prediction,
+    rawDistances: raw.distances,
+    filteredDistances: filtered.distances
+  };
+}
+
 function meanDescriptors(descriptors){
   const average = key => {
     const vectors = descriptors.map(item => item[key]).filter(Array.isArray);
@@ -225,6 +288,7 @@ function classifyMotion(seq, branch = "filtered"){
 
 function classifyFrame(frame, branch = "filtered", kind = "static"){
   const isMotion = kind === "motion";
+  if (!isMotion) return evaluateStaticFrame(frame, branch).prediction;
   const examples = isMotion ? state.motions : state.samples;
   const field = branch === "raw" ? (isMotion ? "rawHolisticSequence" : "rh") :
     (isMotion ? "filteredHolisticSequence" : "h");
@@ -283,6 +347,7 @@ function classifyFrame(frame, branch = "filtered", kind = "static"){
 
 function holisticDistances(frame, branch = "filtered", kind = "static"){
   const isMotion = kind === "motion";
+  if (!isMotion) return evaluateStaticFrame(frame, branch).distances;
   const examples = isMotion ? state.motions : state.samples;
   const field = branch === "raw" ? (isMotion ? "rawHolisticSequence" : "rh") :
     (isMotion ? "filteredHolisticSequence" : "h");
@@ -328,5 +393,5 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
 
 return { features, classify, classifyMotion, classifyFrame, holisticDistances, meanDescriptors,
   resampleDescriptors, toSequence, toSequencePair, staticDistances, motionDistances,
-  calculateDistanceReduction };
+  compareStaticFrames, calculateDistanceReduction };
 }

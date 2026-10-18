@@ -29,6 +29,34 @@ test("static distances are available per label before recognition thresholds", (
   assert.equal(recognition.classify(zero(63), "filtered").label, "A");
 });
 
+test("static frame comparison reuses per-branch results and returns saved-example distances", () => {
+  const state = { samples: [], motions: [] };
+  const recognition = makeRecognition(state);
+  const rawLandmarks = Array.from({ length: 21 }, (_, index) => ({
+    x: 0.2 + index * 0.002,
+    y: 0.3 + index * 0.003,
+    z: index * 0.001
+  }));
+  const filteredLandmarks = rawLandmarks.map(point => ({ ...point, x: point.x + 0.01 }));
+  const rawFrame = { hands: { Left: rawLandmarks } };
+  const filteredFrame = { hands: { Left: filteredLandmarks } };
+  state.samples.push({
+    l: "A",
+    r: recognition.features(rawLandmarks, "Left"),
+    f: recognition.features(filteredLandmarks, "Left")
+  });
+
+  const comparison = recognition.compareStaticFrames(rawFrame, filteredFrame);
+  assert.equal(comparison.rawPrediction.label, "A");
+  assert.equal(comparison.filteredPrediction.label, "A");
+  assert.equal(comparison.rawDistances.A, 0);
+  assert.equal(comparison.filteredDistances.A, 0);
+  assert.deepEqual(comparison.rawPrediction, recognition.classifyFrame(rawFrame, "raw"));
+  assert.deepEqual(comparison.filteredPrediction, recognition.classifyFrame(filteredFrame, "filtered"));
+  assert.deepEqual(comparison.rawDistances, recognition.holisticDistances(rawFrame, "raw"));
+  assert.deepEqual(comparison.filteredDistances, recognition.holisticDistances(filteredFrame, "filtered"));
+});
+
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {
   const state = { samples: [], motions: [
     { l: "Ola", s: sequence(1), r: sequence(0) }

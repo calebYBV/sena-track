@@ -11,7 +11,7 @@ const { $, video, canvas, ctx, statusEl } = dom;
 const { renderList, show, stability, showNoHand, lostHand, updateComparison,
   updateTrackingMetrics, setNote } = ui;
 const { refreshKind, refreshButtons, capture, tickMotion, resetTracking } = training;
-const { classifyFrame, holisticDistances } = recognition;
+const { compareStaticFrames } = recognition;
 let landmarker = null, faceLandmarker = null, drawing = null, stream = null;
 let started = false, frameId = null, startToken = 0, missingFrames = 0;
 let activeHand = null, lastTime = -1;
@@ -184,10 +184,8 @@ function chooseHand(results){
 function compareStatic(track){
   const rawFrame = track.rawFrame;
   const filteredFrame = track.filteredFrame;
-  const rawPrediction = classifyFrame(rawFrame, "raw", "static");
-  const filteredPrediction = classifyFrame(filteredFrame, "filtered", "static");
-  const rawDistances = holisticDistances(rawFrame, "raw", "static");
-  const filteredDistances = holisticDistances(filteredFrame, "filtered", "static");
+  const { rawPrediction, filteredPrediction, rawDistances, filteredDistances } =
+    compareStaticFrames(rawFrame, filteredFrame);
   const requested = $("evaluationReference").value;
   const mainPrediction = state.filterConfig.model === "off" ? rawPrediction : filteredPrediction;
   const reference = requested || mainPrediction?.label;
