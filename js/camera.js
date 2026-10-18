@@ -137,7 +137,6 @@ function drawFace(timestamp, activeIdentities){
   const raw = result.faceLandmarks[0].map(({ x, y, z }) => ({ x, y, z }));
   const filtered = edo.process(raw, "face", timestamp, state.filterConfig);
   activeIdentities.push("face");
-  drawing.drawConnectors(filtered, FaceLandmarker.FACE_LANDMARKS_TESSELATION, { color: "#ffffff33", lineWidth: 1 });
   drawing.drawConnectors(filtered, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
   if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
     drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
@@ -354,7 +353,12 @@ async function start(){
   renderList(); refreshKind();
   try {
     const cameraStream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" }, audio: false
+      video: {
+        width: { ideal: 640, max: 960 },
+        height: { ideal: 480, max: 720 },
+        facingMode: "user"
+      },
+      audio: false
     });
     if (token !== startToken){ cameraStream.getTracks().forEach(track => track.stop()); return; }
     stream = cameraStream;
