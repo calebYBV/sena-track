@@ -1,5 +1,5 @@
 import { calculateDistanceReduction } from "./recognition.js";
-import { countUniqueCaptures } from "./sampleCount.js";
+import { countCapturesForLabel } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -77,7 +77,7 @@ function renderList(){
     tag.textContent = (g.t === "s" ? "Fija" : "Movimiento") +
       (hasLegacy ? " · antigua, solo manos" : "") + (hasPending ? " · pendiente" : "");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
-    const captureCount = countUniqueCaptures(examples);
+    const captureCount = countCapturesForLabel(examples, g.l);
     cnt.textContent = g.t === "s"
       ? `${captureCount} capturas`
       : `${captureCount} grabaciones`;

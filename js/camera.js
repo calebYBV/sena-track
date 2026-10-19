@@ -174,7 +174,9 @@ function chooseHand(results){
       state.cand = null; state.candCount = 0; state.committed = null; state.noHand = 0;
       const recording = !!(state.motion || state.capState);
       resetTracking();
-      if (recording) setNote("Cambió la mano seguida; reinicié la captura para no mezclar trayectorias.");
+      if (recording) setNote(state.motion?.purpose === "recognize"
+        ? "Cambió la mano seguida; reinicié la ventana de reconocimiento."
+        : "Cambió la mano seguida; reinicié la captura para no mezclar trayectorias.");
     }
     activeHand = next;
   }

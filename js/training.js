@@ -71,6 +71,15 @@ function startMotion(purpose, label){
     return;
   }
   setNote("");
+  if (purpose === "recognize"){
+    state.motion = {
+      purpose, phase: "rec", frames: [], lastEvaluatedAt: 0,
+      armed: true, unrecognizedSince: 0
+    };
+    refreshButtons();
+    showLocked("Reconociendo movimientos…", "Realiza una seña con movimiento.", false, 60 * 60 * 1000);
+    return;
+  }
   if (purpose === "train") setEvaluationEnabled(false);
   if (purpose === "train") setCaptureProgress("Preparando movimiento", 0, parseFloat($("dur").value) * 1000, "0 cuadros");
   state.motion = {
@@ -86,13 +95,13 @@ function startMotion(purpose, label){
     return;
   }
   refreshButtons();
-  let n = purpose === "train" ? 3 : 2;
+  let n = 3;
   const step = () => {
     if (!state.motion) return;
     if (n > 0){
       countEl.textContent = n;
       countEl.classList.add("on");
-      if (purpose === "train") setCaptureProgress(`Prepárate… ${n}`, 0, state.motion.ms, "0 cuadros");
+      setCaptureProgress(`Prepárate… ${n}`, 0, state.motion.ms, "0 cuadros");
       n--;
       setTimeout(step, 800);
     }
@@ -100,14 +109,97 @@ function startMotion(purpose, label){
       countEl.classList.remove("on");
       state.onRecordingStart?.();
       state.motion.phase = "rec"; state.motion.t0 = performance.now();
-      if (purpose === "train") setCaptureProgress("Grabando movimiento", 0, state.motion.ms, "0 cuadros");
-      bannerText.textContent = purpose === "train" ? "Grabando “" + label + "”" : "Haz la seña";
+      setCaptureProgress("Grabando movimiento", 0, state.motion.ms, "0 cuadros");
+      bannerText.textContent = "Grabando “" + label + "”";
       bannerBar.style.width = "0"; bannerEl.classList.add("on");
     }
   };
   step();
 }
+function recognizeMotion(res){
+  const motion = state.motion;
+  if (!res){
+    motion.frames = [];
+    motion.lastEvaluatedAt = 0;
+    motion.unrecognizedSince = 0;
+    signEl.textContent = "Muestra la seña con movimiento";
+    signEl.className = "sign idle";
+    metaEl.textContent = "";
+    return;
+  }
+  const lastFrame = motion.frames.at(-1);
+  if (lastFrame && res.timestamp - lastFrame.time > 250){
+    motion.frames = [];
+    motion.lastEvaluatedAt = 0;
+    motion.unrecognizedSince = 0;
+  }
+  motion.frames.push({
+    rawFrame: res.rawFrame,
+    filteredFrame: res.filteredFrame,
+    rawLm: res.rawLandmarks?.map(point => ({ x: point.x, y: point.y, z: point.z })),
+    lm: res.filteredLandmarks?.map(point => ({ x: point.x, y: point.y, z: point.z })),
+    hand: res.hand,
+    time: res.timestamp
+  });
+  const duration = parseFloat($("dur").value) * 1000;
+  const cutoff = res.timestamp - duration;
+  while (motion.frames.length > 8 && motion.frames[1].time < cutoff) motion.frames.shift();
+  const frames = motion.frames;
+  if (frames.length < 8 || res.timestamp - motion.lastEvaluatedAt < 250) return;
+  motion.lastEvaluatedAt = res.timestamp;
+
+  const t0 = frames[0].time;
+  const query = {
+    rawFrames: frames.map(frame => ({ ...frame.rawFrame, time: frame.time - t0 })),
+    filteredFrames: frames.map(frame => ({ ...frame.filteredFrame, time: frame.time - t0 })),
+    rawLegacySequence: null,
+    filteredLegacySequence: null
+  };
+  const pair = legacyMotionPair(frames.map(frame => ({ ...frame, time: frame.time - t0 })),
+    video.videoWidth / video.videoHeight);
+  if (pair){
+    query.rawLegacySequence = pair.raw;
+    query.filteredLegacySequence = pair.filtered;
+  }
+  const raw = classifyFrame(query, "raw", "motion");
+  const filtered = classifyFrame(query, "filtered", "motion");
+  const main = state.filterConfig.model === "off" ? raw : filtered;
+  const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
+  const reference = $("evaluationReference").value || main?.label;
+  const examples = state.motions.filter(example => example.l === reference);
+  updateComparison({
+    kind: "motion", detected: true, rawPrediction: raw, filteredPrediction: filtered,
+    rawDistances, filteredDistances, hasReference: examples.length > 0,
+    legacyReference: examples.some(example => !example.components)
+  });
+  if (main){
+    motion.unrecognizedSince = 0;
+    if (motion.armed){
+      motion.armed = false;
+      const score = main.conf == null ? "" :
+        ` · Puntuación del reconocedor: ${Math.round(main.conf * 100)}% (no es probabilidad validada)`;
+      showLocked(main.label, main.src + score, true);
+      addToPhrase(main.label);
+    } else {
+      signEl.textContent = main.label;
+      signEl.className = "sign";
+      metaEl.textContent = main.src;
+    }
+    return;
+  }
+  if (!motion.unrecognizedSince) motion.unrecognizedSince = res.timestamp;
+  if (res.timestamp - motion.unrecognizedSince >= 500) motion.armed = true;
+  if (performance.now() >= state.readoutLock){
+    signEl.textContent = "Reconociendo movimientos…";
+    signEl.className = "sign idle";
+    metaEl.textContent = "";
+  }
+}
 function tickMotion(res){
+  if (state.motion.purpose === "recognize"){
+    recognizeMotion(res);
+    return;
+  }
   if (state.motion.phase === "count"){ signEl.textContent = "Prepárate"; signEl.className = "sign idle"; metaEl.textContent = ""; return; }
   const missingTrainingParts = state.motion.purpose === "train" &&
     (!res || !hasRequiredParts(res.presence, state.motion.components));
@@ -148,18 +240,18 @@ function finishMotion(){
   state.cand = null; state.candCount = 0; state.committed = null; state.noHand = 0; state.readoutLock = 0;
   const required = m.components;
   const captureComplete = !m.incomplete && m.frames.length >= 8 &&
-    (!required || m.frames.every(frame => hasRequiredParts(frame.presence, required)));
+    m.frames.every(frame => hasRequiredParts(frame.presence, required));
   const aspect = video.videoWidth / video.videoHeight;
-  const rawSequence = required && captureComplete
+  const rawSequence = captureComplete
     ? holisticMotionSequence(m.frames.map(frame => ({
       ...frame.rawFrame, time: frame.time - m.t0
     })), required, aspect) : null;
-  const filteredSequence = required && captureComplete
+  const filteredSequence = captureComplete
     ? holisticMotionSequence(m.frames.map(frame => ({
       ...frame.filteredFrame, time: frame.time - m.t0
     })), required, aspect) : null;
   const sequenceValid = !!rawSequence && !!filteredSequence;
-  if (m.purpose === "train" && sequenceValid){
+  if (sequenceValid){
     const handCounts = m.frames.map(frame => frame.handCount || 0);
     const leftCount = m.frames.filter(frame => frame.hand === "Left").length;
     const captureMeta = {
@@ -196,53 +288,13 @@ function finishMotion(){
     renderList();
     $("trainHint").textContent = `Captura lista para guardar “${m.label}”.`;
     setCaptureProgress("Captura completada", m.ms, m.ms, `${m.frames.length} cuadros`);
-  } else if (m.purpose === "recognize" && captureComplete){
-    const rawFrame = {
-      rawFrames: m.frames.map(frame => ({ ...frame.rawFrame, time: frame.time - m.t0 })),
-      filteredFrames: m.frames.map(frame => ({ ...frame.filteredFrame, time: frame.time - m.t0 })),
-      rawLegacySequence: null, filteredLegacySequence: null
-    };
-    const pair = legacyMotionPair(m.frames, aspect);
-    if (pair){
-      rawFrame.rawLegacySequence = pair.raw;
-      rawFrame.filteredLegacySequence = pair.filtered;
-    }
-    const raw = classifyFrame(rawFrame, "raw", "motion");
-    const filtered = classifyFrame(rawFrame, "filtered", "motion");
-    const main = state.filterConfig.model === "off" ? raw : filtered;
-    const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(rawFrame, "motion");
-    const ref = $("evaluationReference").value || main?.label;
-    const examples = state.motions.filter(example => example.l === ref);
-    updateComparison({ kind: "motion", detected: true, rawPrediction: raw, filteredPrediction: filtered,
-      rawDistances, filteredDistances, hasReference: examples.length > 0,
-      legacyReference: examples.some(example => !example.components) });
-    if (main){
-      const score = main.conf == null ? "" : ` · Puntuación del reconocedor: ${Math.round(main.conf * 100)}% (no es probabilidad validada)`;
-      showLocked(main.label, main.src + score, true); addToPhrase(main.label);
-    } else {
-      const missingParts = m.incomplete || m.frames.some(frame =>
-        state.motions.some(sample => sample.components &&
-          !hasRequiredParts(frame.presence, sample.components)));
-      const message = missingParts
-        ? "Mano o rostro requerido fuera de cámara" : "Seña no reconocida";
-      if (missingParts) setNote(message);
-      showLocked(message, "", false);
-    }
   } else {
-    const missingParts = m.incomplete || (required
-      ? m.frames.some(frame => !hasRequiredParts(frame.presence, required))
-      : m.frames.some(frame => state.motions.some(sample => sample.components &&
-        !hasRequiredParts(frame.presence, sample.components))));
+    const missingParts = m.incomplete ||
+      m.frames.some(frame => !hasRequiredParts(frame.presence, required));
     setNote(missingParts
       ? "Mano o rostro requerido fuera de cámara"
       : "No se capturó una secuencia sincronizada suficiente; seña no reconocida.");
-    if (m.purpose === "recognize"){
-      const message = missingParts ? "Mano o rostro requerido fuera de cámara" : "Seña no reconocida";
-      updateComparison({ detected: true, reason: missingParts ? message : undefined });
-      showLocked(message, "", false);
-    } else {
-      setCaptureProgress("Captura incompleta", 0, m.ms, `${m.frames.length} cuadros`);
-    }
+    setCaptureProgress("Captura incompleta", 0, m.ms, `${m.frames.length} cuadros`);
   }
   setEvaluationEnabled(true);
   refreshButtons();
@@ -275,11 +327,18 @@ for (const id of ["requireLeft", "requireRight", "requireFace"]){
 }
 
 function refreshButtons(){
-  const busy = !state.ready || !!(state.motion || state.capState);
-  $("btnTrain").disabled = busy;
-  $("btnMotion").disabled = busy;
-  document.querySelectorAll('input[name="kind"]').forEach(input => { input.disabled = busy; });
-  for (const id of ["requireLeft", "requireRight", "requireFace"]) $(id).disabled = busy;
+  const capturing = !!state.capState || state.motion?.purpose === "train";
+  $("btnTrain").disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
+  $("btnMotion").disabled = !state.ready || capturing;
+  $("btnMotion").textContent = state.motion?.purpose === "recognize"
+    ? "Detener reconocimiento" : "Reconocer movimiento";
+  $("btnMotion").setAttribute("aria-pressed", String(state.motion?.purpose === "recognize"));
+  document.querySelectorAll('input[name="kind"]').forEach(input => {
+    input.disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
+  });
+  for (const id of ["requireLeft", "requireRight", "requireFace"]){
+    $(id).disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
+  }
 }
 function capture(f){
   if (state.capState.phase !== "rec") return;
@@ -353,6 +412,9 @@ function resetTracking(){
   if (state.motion?.phase === "rec"){
     state.motion.frames = [];
     state.motion.t0 = performance.now();
+    state.motion.lastEvaluatedAt = 0;
+    state.motion.unrecognizedSince = 0;
+    state.motion.armed = true;
     bannerBar.style.width = "0";
   }
   if (state.capState?.phase === "rec"){
@@ -405,10 +467,22 @@ $("btnTrain").onclick = () => {
   };
   tick();
 };
-$("btnMotion").onclick = () => startMotion("recognize");
+$("btnMotion").onclick = () => {
+  if (state.motion?.purpose === "recognize"){
+    state.motion = null;
+    state.cand = null; state.candCount = 0; state.committed = null;
+    state.readoutLock = 0;
+    showLocked("Reconocimiento detenido", "", false);
+    refreshButtons();
+    return;
+  }
+  startMotion("recognize");
+};
 document.addEventListener("keydown", e => {
   if (e.code === "Space" && !/^(INPUT|TEXTAREA|BUTTON|SELECT)$/.test(e.target.tagName)){
-    e.preventDefault(); startMotion("recognize");
+    e.preventDefault();
+    if (state.motion?.purpose === "recognize") $("btnMotion").click();
+    else startMotion("recognize");
   }
 });
 

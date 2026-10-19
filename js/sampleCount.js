@@ -6,3 +6,7 @@ export function countUniqueCaptures(examples){
   }
   return seen.size;
 }
+
+export function countCapturesForLabel(examples, label){
+  return countUniqueCaptures(examples.filter(example => example.l === label));
+}
