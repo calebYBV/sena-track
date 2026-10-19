@@ -6,8 +6,7 @@ import { extractHolisticFeatures } from "../js/holistic.js";
 const zero = length => Array(length).fill(0);
 const sequence = value => Array.from({ length: 24 }, () => Array(65).fill(value));
 
-function makeRecognition(state){
-  const values = { tol: "1.5", tolM: "2" };
+function makeRecognition(state, values = { tol: "1.5", tolM: "2" }){
   return createRecognition({
     state,
     dom: { $: id => ({ value: values[id] }), video: { videoWidth: 640, videoHeight: 480 } }
@@ -146,6 +145,44 @@ test("holistic motion recognition uses synchronized frame times in both branches
   assert.equal(recognition.classifyFrame(query, "raw", "motion").label, "Movimiento");
   assert.equal(recognition.classifyFrame(query, "filtered", "motion").label, "Movimiento");
   assert.equal(recognition.pairedHolisticDistances(query, "motion").rawDistances.Movimiento, 0);
+});
+
+test("holistic motion recognition compares wrist trajectory for a single hand", () => {
+  const state = { samples: [], motions: [] };
+  const recognition = makeRecognition(state, { tol: "1.5", tolM: "0.1" });
+  const components = { left: true, right: false, face: false };
+  const makeFrames = positions => positions.map((offset, index) => ({
+    time: index * 30,
+    hands: {
+      Left: Array.from({ length: 21 }, (_, point) => ({
+        x: offset + point * 0.003,
+        y: 0.35 + point * 0.002,
+        z: point * 0.001
+      }))
+    }
+  }));
+  const moving = makeFrames(Array.from({ length: 12 }, (_, index) => 0.2 + index * 0.025));
+  const stationary = makeFrames(Array(12).fill(0.2));
+  const oldDescriptors = moving.map(frame =>
+    extractHolisticFeatures(frame, 4 / 3, components));
+  const reference = recognition.resampleDescriptors(oldDescriptors, 24, moving.map(frame => frame.time));
+  state.motions.push({
+    l: "Desplazamiento",
+    components,
+    rawHolisticSequence: reference,
+    filteredHolisticSequence: reference,
+    rawFrames: moving,
+    filteredFrames: moving
+  });
+
+  assert.equal(
+    recognition.classifyFrame({ rawFrames: moving, filteredFrames: moving }, "raw", "motion")?.label,
+    "Desplazamiento"
+  );
+  assert.equal(
+    recognition.classifyFrame({ rawFrames: stationary, filteredFrames: stationary }, "raw", "motion"),
+    null
+  );
 });
 
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {

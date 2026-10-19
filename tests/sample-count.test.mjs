@@ -15,9 +15,16 @@ test("legacy examples without capture ids count as individual records", () => {
   assert.equal(countUniqueCaptures([first, second, first]), 2);
 });
 
-test("repeated rows from one timestamped capture count once", () => {
+test("distinct sync ids remain separate even when timestamps match", () => {
   assert.equal(countUniqueCaptures([
     { syncId: "row-a", captureMeta: { capturedAt: "2026-10-18T20:00:00.000Z" } },
     { syncId: "row-b", captureMeta: { capturedAt: "2026-10-18T20:00:00.000Z" } }
+  ]), 2);
+});
+
+test("capture ids deduplicate rows before their distinct sync ids", () => {
+  assert.equal(countUniqueCaptures([
+    { captureId: "capture-a", syncId: "row-a" },
+    { captureId: "capture-a", syncId: "row-b" }
   ]), 1);
 });

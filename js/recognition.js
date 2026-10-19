@@ -1,4 +1,4 @@
-import { extractHolisticFeatures, holisticDistance } from "./holistic.js";
+import { addMotionTrajectory, extractHolisticFeatures, holisticDistance } from "./holistic.js";
 
 export function calculateDistanceReduction(rawDistance, filteredDistance){
   if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance) || rawDistance <= 1e-6) return null;
@@ -241,14 +241,21 @@ function descriptorDistance(a, b, required){
 
 function interpolateDescriptor(a, b, fraction){
   const interpolateArray = (x, y) => x.map((value, index) => value + (y[index] - value) * fraction);
-  const hands = {}, placement = {};
+  const hands = {}, placement = {}, trajectory = {};
   for (const side of ["Left", "Right"]){
     if (a.hands?.[side] && b.hands?.[side]) hands[side] = interpolateArray(a.hands[side], b.hands[side]);
     if (a.placement?.[side] && b.placement?.[side]) placement[side] = interpolateArray(a.placement[side], b.placement[side]);
+    if (a.trajectory?.[side] && b.trajectory?.[side]){
+      trajectory[side] = interpolateArray(a.trajectory[side], b.trajectory[side]);
+    }
+  }
+  if (a.trajectory?.face && b.trajectory?.face){
+    trajectory.face = interpolateArray(a.trajectory.face, b.trajectory.face);
   }
   return {
     hands,
     placement: Object.keys(placement).length ? placement : null,
+    trajectory: Object.keys(trajectory).length ? trajectory : null,
     face: a.face && b.face ? interpolateArray(a.face, b.face) : null
   };
 }
@@ -266,6 +273,24 @@ function resampleDescriptors(frames, count = 24, times = null){
     const fraction = span > 0 ? (target - positions[start]) / span : 0;
     return interpolateDescriptor(frames[start], frames[end], fraction);
   });
+}
+function holisticMotionSequence(frames, required, aspect, count = 24){
+  if (!Array.isArray(frames) || frames.length < 8) return null;
+  const descriptors = frames.map(frame => extractHolisticFeatures(frame, aspect, required));
+  if (descriptors.some(descriptor => !descriptor)) return null;
+  const withTrajectory = addMotionTrajectory(descriptors, frames, required, aspect);
+  if (!withTrajectory) return null;
+  return resampleDescriptors(withTrajectory, count, frames.map(frame => frame.time));
+}
+function holisticMotionReference(sample, field, branch, aspect){
+  const reference = sample[field];
+  if (!Array.isArray(reference)) return null;
+  const sides = ["Left", "Right"].filter(side => sample.components[side.toLowerCase()]);
+  if (reference.every(frame => sides.every(side => Array.isArray(frame.trajectory?.[side])))){
+    return reference;
+  }
+  const sourceFrames = branch === "raw" ? sample.rawFrames : sample.filteredFrames;
+  return holisticMotionSequence(sourceFrames, sample.components, aspect) || reference;
 }
 function holisticDtw(a, b, required){
   const n = a.length, m = b.length, infinity = Number.POSITIVE_INFINITY;
@@ -321,16 +346,16 @@ function classifyFrame(frame, branch = "filtered", kind = "static"){
       sample[field] && typeof sample[field] === "object";
     if (sample.components && hasReference){
       const sourceFrames = branch === "raw" ? frame.rawFrames : frame.filteredFrames;
-      const queryFrames = isMotion
-        ? sourceFrames?.map(item => extractHolisticFeatures(item, aspect, sample.components))
-        : null;
       const descriptor = isMotion ? null : extractHolisticFeatures(frame, aspect, sample.components);
-      const reference = isMotion ? sample[field] : [sample[field]];
-      if (isMotion && (!queryFrames?.length || queryFrames.some(item => !item))) continue;
+      const reference = isMotion
+        ? holisticMotionReference(sample, field, branch, aspect) : [sample[field]];
+      if (!reference) continue;
+      if (isMotion && !sourceFrames?.length) continue;
       if (!isMotion && !descriptor || !reference.length) continue;
-      const query = isMotion ? resampleDescriptors(queryFrames, 24, sourceFrames.map(item => item.time)) : descriptor;
+      const query = isMotion
+        ? holisticMotionSequence(sourceFrames, sample.components, aspect) : descriptor;
       if (isMotion){
-        if (query.length < 8) continue;
+        if (!query) continue;
         entries.push([holisticDtw(query, reference, sample.components), sample.l]);
       } else {
         entries.push([descriptorDistance(descriptor, reference[0], sample.components), sample.l]);
@@ -434,16 +459,16 @@ function pairedHolisticDistances(frame, kind = "static"){
       if (!Array.isArray(rawSources) || !Array.isArray(filteredSources) ||
           rawSources.length !== filteredSources.length ||
           !Array.isArray(sample.rawHolisticSequence) || !Array.isArray(sample.filteredHolisticSequence)) continue;
-      const rawDescriptors = rawSources.map(item => extractHolisticFeatures(item, aspect, sample.components));
-      const filteredDescriptors = filteredSources.map(item => extractHolisticFeatures(item, aspect, sample.components));
-      if (rawDescriptors.length < 8 || rawDescriptors.some(item => !item) ||
-          filteredDescriptors.some(item => !item)) continue;
       const times = rawSources.map(item => item.time);
       if (!times.every(Number.isFinite) || filteredSources.some((item, index) => item.time !== times[index])) continue;
-      rawDistance = holisticDtw(
-        resampleDescriptors(rawDescriptors, 24, times), sample.rawHolisticSequence, sample.components);
-      filteredDistance = holisticDtw(
-        resampleDescriptors(filteredDescriptors, 24, times), sample.filteredHolisticSequence, sample.components);
+      const rawSequence = holisticMotionSequence(rawSources, sample.components, aspect);
+      const filteredSequence = holisticMotionSequence(filteredSources, sample.components, aspect);
+      if (!rawSequence || !filteredSequence) continue;
+      const rawReference = holisticMotionReference(sample, "rawHolisticSequence", "raw", aspect);
+      const filteredReference = holisticMotionReference(sample, "filteredHolisticSequence", "filtered", aspect);
+      if (!rawReference || !filteredReference) continue;
+      rawDistance = holisticDtw(rawSequence, rawReference, sample.components);
+      filteredDistance = holisticDtw(filteredSequence, filteredReference, sample.components);
     } else if (!sample.components && kind === "motion"){
       const rawReference = sample.r || sample.s, filteredReference = sample.s;
       if (!Array.isArray(frame.rawLegacySequence) || !Array.isArray(frame.filteredLegacySequence) ||
@@ -474,6 +499,6 @@ function pairedHolisticDistances(frame, kind = "static"){
 }
 
 return { features, classify, classifyMotion, classifyFrame, holisticDistances, meanDescriptors,
-  resampleDescriptors, toSequence, toSequencePair, staticDistances, motionDistances,
+  resampleDescriptors, holisticMotionSequence, toSequence, toSequencePair, staticDistances, motionDistances,
   compareStaticFrames, pairedHolisticDistances, calculateDistanceReduction };
 }

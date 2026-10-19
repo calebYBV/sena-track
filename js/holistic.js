@@ -119,6 +119,54 @@ export function extractHolisticFeatures(frame, aspect, required){
   };
 }
 
+export function addMotionTrajectory(descriptors, frames, required, aspect){
+  const sides = ["Left", "Right"].filter(side => required[side.toLowerCase()]);
+  const tracks = Object.fromEntries(sides.map(side => {
+    const points = frames.map(frame => {
+      const hand = frame.hands?.[side];
+      if (!Array.isArray(hand) || hand.length !== 21) return null;
+      const wrist = point(hand[0]), palm = point(hand[9]);
+      const scale = distance(wrist, palm, aspect);
+      if (!Number.isFinite(scale) || scale < 1e-5) return null;
+      return { wrist, scale };
+    });
+    if (points.some(value => !value)) return [side, null];
+    const origin = points[0].wrist;
+    const scale = points.reduce((sum, value) => sum + value.scale, 0) / points.length;
+    return [side, points.map(({ wrist }) => [
+      ((wrist.x - origin.x) * aspect) / scale,
+      (wrist.y - origin.y) / scale,
+      (wrist.z - origin.z) / scale
+    ])];
+  }));
+  if (required.face){
+    const points = frames.map(frame => {
+      const landmarks = frame.faceLandmarks;
+      if (!Array.isArray(landmarks) || landmarks.length <= 263) return null;
+      const origin = point(landmarks[1]);
+      const scale = distance(landmarks[33], landmarks[263], aspect);
+      if (!Number.isFinite(scale) || scale < 1e-5) return null;
+      return { origin, scale };
+    });
+    if (points.some(value => !value)) return null;
+    const origin = points[0].origin;
+    const scale = points.reduce((sum, value) => sum + value.scale, 0) / points.length;
+    tracks.face = points.map(({ origin: current }) => [
+      ((current.x - origin.x) * aspect) / scale,
+      (current.y - origin.y) / scale,
+      (current.z - origin.z) / scale
+    ]);
+  }
+  if (Object.values(tracks).some(track => !track)) return null;
+  return descriptors.map((descriptor, index) => ({
+    ...descriptor,
+    trajectory: Object.fromEntries([
+      ...sides.map(side => [side, tracks[side][index]]),
+      ...(required.face ? [["face", tracks.face[index]]] : [])
+    ])
+  }));
+}
+
 export function holisticDistance(a, b, required){
   const sides = ["Left", "Right"].filter(side => required[side.toLowerCase()]);
   const terms = [];
@@ -135,6 +183,14 @@ export function holisticDistance(a, b, required){
         sum + (value - bv[index]) ** 2, 0)),
       weight: handShapeWeight / sides.length
     });
+    const at = a.trajectory?.[side], bt = b.trajectory?.[side];
+    if (Array.isArray(at) && Array.isArray(bt) && at.length === bt.length){
+      terms.push({
+        distance: Math.sqrt(at.reduce((sum, value, index) =>
+          sum + (value - bt[index]) ** 2, 0)),
+        weight: 0.5 / sides.length
+      });
+    }
   }
   if (required.face){
     if (!Array.isArray(a.face) || !Array.isArray(b.face) || a.face.length !== b.face.length) return Infinity;
@@ -143,6 +199,14 @@ export function holisticDistance(a, b, required){
         sum + (value - b.face[index]) ** 2, 0)) * FACE_FEATURE_SCALE,
       weight: sides.length ? FACE_WEIGHT_WITH_HANDS : 1
     });
+    const at = a.trajectory?.face, bt = b.trajectory?.face;
+    if (Array.isArray(at) && Array.isArray(bt) && at.length === bt.length){
+      terms.push({
+        distance: Math.sqrt(at.reduce((sum, value, index) =>
+          sum + (value - bt[index]) ** 2, 0)),
+        weight: 0.5
+      });
+    }
   }
   if (placementWeight && a.placement && b.placement){
     for (const side of ["Left", "Right"]){

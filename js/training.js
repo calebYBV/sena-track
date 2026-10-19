@@ -6,7 +6,7 @@ const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, list
 const { setNote, renderList, showLocked, addToPhrase, updateComparison, setEvaluationEnabled } = ui;
 const { saveAll } = storage;
 const { toSequencePair, classifyFrame, meanDescriptors,
-  resampleDescriptors } = recognition;
+  holisticMotionSequence } = recognition;
 const N_STEPS = 24, CAPTURE_FRAMES = 40;
 function filterMetadata(config){
   return {
@@ -151,10 +151,14 @@ function finishMotion(){
     (!required || m.frames.every(frame => hasRequiredParts(frame.presence, required)));
   const aspect = video.videoWidth / video.videoHeight;
   const rawSequence = required && captureComplete
-    ? m.frames.map(frame => extractHolisticFeatures(frame.rawFrame, aspect, required)) : [];
+    ? holisticMotionSequence(m.frames.map(frame => ({
+      ...frame.rawFrame, time: frame.time - m.t0
+    })), required, aspect) : null;
   const filteredSequence = required && captureComplete
-    ? m.frames.map(frame => extractHolisticFeatures(frame.filteredFrame, aspect, required)) : [];
-  const sequenceValid = rawSequence.length >= 8 && rawSequence.every(Boolean) && filteredSequence.every(Boolean);
+    ? holisticMotionSequence(m.frames.map(frame => ({
+      ...frame.filteredFrame, time: frame.time - m.t0
+    })), required, aspect) : null;
+  const sequenceValid = !!rawSequence && !!filteredSequence;
   if (m.purpose === "train" && sequenceValid){
     const handCounts = m.frames.map(frame => frame.handCount || 0);
     const leftCount = m.frames.filter(frame => frame.hand === "Left").length;
@@ -176,10 +180,8 @@ function finishMotion(){
       components: required, source: "paired-raw-and-filtered-v2", captureId: m.captureId,
       filter: filterMetadata(state.filterConfig), captureMeta,
       rawFrames: storedFrames("rawFrame"), filteredFrames: storedFrames("filteredFrame"),
-      rawHolisticSequence: resampleDescriptors(rawSequence, N_STEPS,
-        m.frames.map(frame => frame.time - m.t0)),
-      filteredHolisticSequence: resampleDescriptors(filteredSequence, N_STEPS,
-        m.frames.map(frame => frame.time - m.t0)),
+      rawHolisticSequence: rawSequence,
+      filteredHolisticSequence: filteredSequence,
       syncStatus: "pending"
     };
     const legacyPair = legacyMotionPair(m.frames, aspect);

@@ -93,6 +93,20 @@ test("bimanual recognition compares both hands and their relative position", () 
   assert.equal(recognition.classifyFrame(holisticFrame({ right: hand(0.8) })), null);
 });
 
+test("facial-only motion distance includes head trajectory", () => {
+  const required = { left: false, right: false, face: true };
+  const stationary = {
+    hands: {},
+    face: Array(32).fill(0),
+    trajectory: { face: [0, 0, 0] }
+  };
+  const moving = {
+    ...stationary,
+    trajectory: { face: [1, 0, 0] }
+  };
+  assert.ok(holisticDistance(stationary, moving, required) > 0);
+});
+
 test("recognition returns no label for empty or pending-only libraries", () => {
   const values = { tol: "0.8", tolM: "0.7" };
   const state = { samples: [], motions: [] };

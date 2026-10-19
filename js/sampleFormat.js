@@ -57,6 +57,14 @@ function validDescriptor(descriptor, components){
           (!finiteVector(descriptor.placement[side], 3))) return false;
     }
   }
+  if (descriptor.trajectory !== null && descriptor.trajectory !== undefined){
+    for (const [enabled, side] of [[components.left, "Left"], [components.right, "Right"]]){
+      if (enabled && !finiteVector(descriptor.trajectory[side], 3)) return false;
+      if (!enabled && descriptor.trajectory[side] !== undefined) return false;
+    }
+    if (components.face && !finiteVector(descriptor.trajectory.face, 3)) return false;
+    if (!components.face && descriptor.trajectory.face !== undefined) return false;
+  }
   return true;
 }
 

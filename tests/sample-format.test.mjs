@@ -110,6 +110,37 @@ test("motion captures require finite, ordered raw landmarks and store relative t
   assert.equal(stored.payload.provenance.rawCoordinatesAvailable, true);
 });
 
+test("holistic motion sequences preserve validated wrist trajectories", () => {
+  const handPoints = landmarks();
+  const frames = Array.from({ length: 8 }, (_, index) => ({
+    time: index * 20,
+    presence: { Left: true, Right: false, face: false, faceFeatures: false },
+    hands: { Left: handPoints }
+  }));
+  const descriptor = {
+    hands: { Left: features(63) },
+    placement: null,
+    trajectory: { Left: [0.1, 0.2, 0.3] },
+    face: null
+  };
+  const sample = {
+    l: "Desplazamiento",
+    components: { left: true, right: false, face: false },
+    rawFrames: frames,
+    filteredFrames: structuredClone(frames),
+    rawHolisticSequence: Array.from({ length: 24 }, () => descriptor),
+    filteredHolisticSequence: Array.from({ length: 24 }, () => descriptor),
+    source: "paired-raw-and-filtered-v2"
+  };
+  const stored = prepareSamplePayload(sample, "motion");
+  assert.deepEqual(stored.payload.rawHolisticSequence[0].trajectory.Left, [0.1, 0.2, 0.3]);
+  assert.throws(() => prepareSamplePayload({
+    ...sample,
+    rawHolisticSequence: sample.rawHolisticSequence.map((frame, index) =>
+      index === 4 ? { ...frame, trajectory: { Left: [0.1, Number.NaN, 0.3] } } : frame)
+  }, "motion"), /secuencia EDO y original/);
+});
+
 test("legacy motion feature sequences remain importable without invented coordinates", () => {
   const sample = {
     l: "Hola",
