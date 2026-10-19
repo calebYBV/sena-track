@@ -185,6 +185,49 @@ test("holistic motion recognition compares wrist trajectory for a single hand", 
   );
 });
 
+test("motion recognition distinguishes opposite trajectories and rejects ambiguity", () => {
+  const state = { samples: [], motions: [] };
+  const recognition = makeRecognition(state, { tol: "1.5", tolM: "0.1" });
+  const components = { left: true, right: false, face: false };
+  const makeFrames = positions => positions.map((offset, index) => ({
+    time: index * 30,
+    hands: {
+      Left: Array.from({ length: 21 }, (_, point) => ({
+        x: offset + point * 0.003,
+        y: 0.35 + point * 0.002,
+        z: point * 0.001
+      }))
+    }
+  }));
+  const rightward = makeFrames(Array.from({ length: 12 }, (_, index) => 0.2 + index * 0.025));
+  const leftward = makeFrames(Array.from({ length: 12 }, (_, index) => 0.475 - index * 0.025));
+  const register = (label, frames) => {
+    const sequence = recognition.holisticMotionSequence(frames, components, 4 / 3);
+    state.motions.push({
+      l: label,
+      components,
+      rawHolisticSequence: sequence,
+      filteredHolisticSequence: sequence
+    });
+  };
+  register("Derecha", rightward);
+  register("Izquierda", leftward);
+
+  const query = frames => ({ rawFrames: frames, filteredFrames: frames });
+  assert.equal(recognition.classifyFrame(query(rightward), "raw", "motion")?.label, "Derecha");
+  assert.equal(recognition.classifyFrame(query(leftward), "raw", "motion")?.label, "Izquierda");
+  const distances = recognition.holisticDistances(query(rightward), "raw", "motion");
+  assert.ok(distances.Derecha < distances.Izquierda);
+
+  state.motions.push({
+    l: "Ambigua",
+    components,
+    rawHolisticSequence: state.motions[0].rawHolisticSequence,
+    filteredHolisticSequence: state.motions[0].filteredHolisticSequence
+  });
+  assert.equal(recognition.classifyFrame(query(rightward), "raw", "motion"), null);
+});
+
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {
   const state = { samples: [], motions: [
     { l: "Ola", s: sequence(1), r: sequence(0) }

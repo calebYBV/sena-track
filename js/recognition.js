@@ -9,6 +9,7 @@ export function createRecognition({ state, dom }){
 const { $, video } = dom;
 const K = 5;
 const POS_W = 2;
+const MIN_MOTION_CONFIDENCE = 0.55;
 
 function shapeFeatures(lm, ar, flip){
   const w = lm[0];
@@ -286,7 +287,8 @@ function holisticMotionReference(sample, field, branch, aspect){
   const reference = sample[field];
   if (!Array.isArray(reference)) return null;
   const sides = ["Left", "Right"].filter(side => sample.components[side.toLowerCase()]);
-  if (reference.every(frame => sides.every(side => Array.isArray(frame.trajectory?.[side])))){
+  const tracks = [...sides, ...(sample.components.face ? ["face"] : [])];
+  if (reference.every(frame => tracks.every(side => Array.isArray(frame.trajectory?.[side])))){
     return reference;
   }
   const sourceFrames = branch === "raw" ? sample.rawFrames : sample.filteredFrames;
@@ -329,6 +331,7 @@ function classifyMotion(seq, branch = "filtered"){
   const [label, distance] = arr[0];
   if (distance > tol) return null;
   const score = arr.length > 1 ? arr[1][1] / (distance + arr[1][1]) : Math.max(0, 1 - distance / tol);
+  if (score < MIN_MOTION_CONFIDENCE) return null;
   return { label, conf: score, src: "seña con movimiento" };
 }
 
@@ -385,9 +388,10 @@ function classifyFrame(frame, branch = "filtered", kind = "static"){
   const threshold = Number.parseFloat($(isMotion ? "tolM" : "tol").value);
   const [distance, label] = entries[0];
   if (distance > threshold) return null;
-  const next = entries.find(([candidate, other]) => other !== label && candidate > distance);
+  const next = entries.find(([, other]) => other !== label);
   const confidence = next ? next[0] / Math.max(1e-9, distance + next[0]) :
     Math.max(0, 1 - distance / threshold);
+  if (isMotion && confidence < MIN_MOTION_CONFIDENCE) return null;
   return { label, conf: confidence, src: isMotion ? "seña guardada con movimiento" : "seña guardada" };
 }
 
@@ -405,16 +409,16 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
       sample[field] && typeof sample[field] === "object";
     if (!sample.components || !hasReference) continue;
     const sourceFrames = branch === "raw" ? frame.rawFrames : frame.filteredFrames;
-    const queryFrames = isMotion
-      ? sourceFrames?.map(item => extractHolisticFeatures(item, aspect, sample.components))
-      : null;
     const descriptor = isMotion ? null : extractHolisticFeatures(frame, aspect, sample.components);
-    if (isMotion && (!queryFrames?.length || queryFrames.some(item => !item)) ||
-        !isMotion && !descriptor) continue;
+    if (isMotion && !sourceFrames?.length || !isMotion && !descriptor) continue;
+    const query = isMotion ? holisticMotionSequence(sourceFrames, sample.components, aspect) : null;
+    if (isMotion && !query) continue;
+    const reference = isMotion
+      ? holisticMotionReference(sample, field, branch, aspect) : sample[field];
+    if (!reference) continue;
     const distance = isMotion
-      ? holisticDtw(resampleDescriptors(queryFrames, 24, sourceFrames.map(item => item.time)),
-        sample[field], sample.components)
-      : descriptorDistance(descriptor, sample[field][0], sample.components);
+      ? holisticDtw(query, reference, sample.components)
+      : descriptorDistance(descriptor, reference[0], sample.components);
     if (Number.isFinite(distance) &&
         (best[sample.l] === undefined || distance < best[sample.l])) best[sample.l] = distance;
   }
