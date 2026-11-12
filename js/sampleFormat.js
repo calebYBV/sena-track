@@ -105,6 +105,34 @@ export function validateRawCapture(sample){
   validateFrameSequences(sample.rawFrames, sample.rawFrames, sample.components);
 }
 
+export function validateEvaluationCapture(sample){
+  if (!sample || typeof sample !== "object"){
+    throw new TypeError("Cada captura de evaluación debe ser un objeto.");
+  }
+  if (typeof sample.captureId !== "string" ||
+      !sample.captureId.trim() || sample.captureId.length > 128){
+    throw new TypeError("Cada captura de evaluación debe incluir un captureId de 1 a 128 caracteres.");
+  }
+  if (typeof sample.truth !== "string" ||
+      !sample.truth.trim() || sample.truth.trim().length > 80){
+    throw new TypeError("Cada captura de evaluación debe incluir una etiqueta truth de 1 a 80 caracteres.");
+  }
+  if (sample.kind !== "static" && sample.kind !== "motion"){
+    throw new TypeError('kind debe ser exactamente "static" o "motion".');
+  }
+  if (sample.source !== "paired-raw-and-filtered-v2"){
+    throw new TypeError('La captura de evaluación debe tener source "paired-raw-and-filtered-v2".');
+  }
+  for (const field of ["participantId", "sessionId"]){
+    if (sample[field] !== undefined &&
+        (typeof sample[field] !== "string" ||
+         !sample[field].trim() || sample[field].length > 128)){
+      throw new TypeError(`${field} debe ser un identificador seudónimo de 1 a 128 caracteres.`);
+    }
+  }
+  validateRawCapture(sample);
+}
+
 function validateStatic(sample){
   if (sample.source === "paired-raw-and-filtered-v2" && !sample.components){
     throw new TypeError("El formato holístico requiere los componentes de la seña.");

@@ -10,6 +10,7 @@ export const DEFAULT_AMBIGUITY_CONFIG = Object.freeze({
   absoluteMargin: 0.04,
   relativeMargin: 0.08
 });
+export const STATIC_CONFIRMATION_FRAMES = 15;
 
 export function normalizeAmbiguityConfig(config){
   const candidate = { ...DEFAULT_AMBIGUITY_CONFIG, ...(config || {}) };

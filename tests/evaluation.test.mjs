@@ -1,10 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  assertIndependentEvaluationSets,
   assertIndependentEvaluationSet,
   calculateClassificationMetrics,
-  evaluateModels
+  evaluateModels,
+  replayStaticConfirmation
 } from "../js/evaluation.js";
+import { validateEvaluationCapture } from "../js/sampleFormat.js";
 
 test("classification metrics report per-class performance, rejects, ambiguity, and latency", () => {
   const result = calculateClassificationMetrics([
@@ -38,6 +41,78 @@ test("evaluation rejects overlapping capture ids and participant sessions", () =
   ], { separateParticipants: true }), /participante/);
 });
 
+test("three-way splits reject shared captures and sessions and require pseudonymous IDs in strict modes", () => {
+  const training = [{ captureId: "train", participantId: "P1", sessionId: "S1" }];
+  const validation = [{ captureId: "validation", truth: "A", participantId: "P2", sessionId: "S2" }];
+  const test = [{ captureId: "test", truth: "A", participantId: "P3", sessionId: "S3" }];
+  const result = assertIndependentEvaluationSets(training, validation, test);
+  assert.equal(result.captureIdsDisjoint, true);
+  assert.equal(result.sessionSeparationChecked, true);
+
+  assert.throws(() => assertIndependentEvaluationSets(
+    training,
+    validation,
+    [{ ...test[0], participantId: "P2", sessionId: "S2" }]
+  ), /sesión/);
+  assert.throws(() => assertIndependentEvaluationSets(
+    training,
+    validation,
+    [{ ...test[0], captureId: "validation" }]
+  ), /captura/);
+  assert.throws(() => assertIndependentEvaluationSets(
+    training,
+    [{ captureId: "validation", truth: "A" }],
+    test,
+    { separateSessions: true }
+  ), /participantId y sessionId/);
+  assert.throws(() => assertIndependentEvaluationSets(
+    training,
+    [{ captureId: "validation", truth: "A", participantId: "P1", sessionId: "S2" }],
+    test,
+    { separateParticipants: true }
+  ), /participante P1/);
+});
+
+test("evaluation captures reject missing, mistyped, or unknown kind values", () => {
+  const sample = {
+    captureId: "heldout-1",
+    truth: "A",
+    kind: "static",
+    source: "paired-raw-and-filtered-v2",
+    components: { left: true, right: false, face: false },
+    rawFrames: Array.from({ length: 8 }, (_, index) => ({
+      time: index * 20,
+      presence: { Left: true, Right: false, face: false, faceFeatures: false },
+      hands: { Left: Array.from({ length: 21 }, (_, pointIndex) =>
+        [0.1 + pointIndex * 0.002, 0.2 + pointIndex * 0.003, 0]) }
+    }))
+  };
+  assert.doesNotThrow(() => validateEvaluationCapture(sample));
+  for (const kind of [undefined, null, 1, "other"]){
+    const invalid = { ...sample, kind };
+    if (kind === undefined) delete invalid.kind;
+    assert.throws(() => validateEvaluationCapture(invalid), /kind debe ser exactamente/);
+  }
+  assert.throws(() => validateEvaluationCapture({
+    ...sample, participantId: 7
+  }), /participantId debe ser/);
+});
+
+test("static replay requires the live confirmation count and resets on ambiguity", () => {
+  const frames = Array.from({ length: 30 }, (_, index) => ({
+    time: index * 20, index
+  }));
+  const replay = replayStaticConfirmation(frames, frame =>
+    frame.index === 10 ? { label: null, reason: "ambiguous" } : { label: "A" }, 15);
+  assert.equal(replay.confirmed, true);
+  assert.equal(replay.prediction.label, "A");
+  assert.equal(replay.latencyMs, 500);
+  assert.equal(replay.ambiguousObserved, true);
+  assert.equal(replayStaticConfirmation(
+    frames.slice(0, 14), () => ({ label: "A" }), 15
+  ).confirmed, false);
+});
+
 test("model evaluation uses the same held-out records and returns per-model metrics", () => {
   const records = [
     { captureId: "A-1", truth: "A" },
@@ -59,4 +134,10 @@ test("metrics explicitly reject empty or malformed evaluation data", () => {
   assert.equal(calculateClassificationMetrics([
     { truth: "A", prediction: null }
   ]).meanLatencyMs, null);
+  const unconfirmed = calculateClassificationMetrics([
+    { truth: "A", prediction: null, latencyMs: null }
+  ]);
+  assert.equal(unconfirmed.falseRejects, 1);
+  assert.equal(unconfirmed.meanLatencyMs, null);
+  assert.equal(unconfirmed.latencySampleCount, 0);
 });
