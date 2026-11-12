@@ -107,6 +107,12 @@ h2{font-family:var(--display);font-weight:700;font-size:1.25rem;margin:0 0 12px}
 .variables span{color:var(--muted)}
 .calculation-details{margin-top:18px;border-top:1px solid #bcecff;padding-top:12px}
 .calculation-details summary,.filter-preferences summary{font-weight:700;color:var(--sea);cursor:pointer}
+.ambiguity-settings{margin-top:12px;padding:10px 12px;border:1px solid #d6edf8;border-radius:12px;background:#fff}
+.ambiguity-settings summary{color:var(--sea);font-weight:700;cursor:pointer}
+.ambiguity-settings p{margin:8px 0;color:var(--muted);font-size:.82rem}
+.ambiguity-settings label{display:grid;grid-template-columns:1fr auto;gap:4px 10px;margin-top:8px;font-size:.84rem;font-weight:700}
+.ambiguity-settings output{color:var(--sea);font-variant-numeric:tabular-nums}
+.ambiguity-settings input{grid-column:1/-1;width:100%;accent-color:var(--sea)}
 .calculation-copy p{margin:12px 0 0}
 .comparison-section,.tracking-metrics{margin-top:20px}
 .reference-line{margin:0 0 10px;padding:9px 13px;border-radius:12px;background:var(--mist);font-weight:700}

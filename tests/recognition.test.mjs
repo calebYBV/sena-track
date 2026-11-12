@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRecognition, calculateDistanceReduction } from "../js/recognition.js";
+import {
+  createRecognition,
+  calculateDistanceReduction,
+  DEFAULT_AMBIGUITY_CONFIG,
+  normalizeAmbiguityConfig
+} from "../js/recognition.js";
+import { DEFAULT_FILTER_CONFIG, createEdoFilter } from "../js/filters.js";
 import { extractHolisticFeatures } from "../js/holistic.js";
 
 const zero = length => Array(length).fill(0);
@@ -27,6 +33,33 @@ test("static distances are available per label before recognition thresholds", (
   assert.equal(recognition.staticDistances(zero(63), "raw").Anterior,
     recognition.staticDistances(zero(63), "filtered").Anterior);
   assert.equal(recognition.classify(zero(63), "filtered").label, "A");
+});
+
+test("static classification rejects close classes and accepts a clearly separated class", () => {
+  const state = { samples: [], motions: [], ambiguityConfig: { ...DEFAULT_AMBIGUITY_CONFIG } };
+  const recognition = makeRecognition(state);
+  const query = zero(63);
+  state.samples.push(
+    { l: "A", f: zero(63).map(() => 0.01) },
+    { l: "B", f: zero(63).map(() => 0.0105) }
+  );
+  assert.equal(recognition.classify(query)?.reason, "ambiguous");
+
+  state.ambiguityConfig = normalizeAmbiguityConfig({ absoluteMargin: 0.001, relativeMargin: 0.001 });
+  assert.notEqual(recognition.classify(query)?.reason, "ambiguous");
+  state.samples[1].f = zero(63).map(() => 0.1);
+  state.ambiguityConfig = { ...DEFAULT_AMBIGUITY_CONFIG };
+  assert.equal(recognition.classify(query)?.label, "A");
+});
+
+test("empty, one-class, and invalid ambiguity settings are handled explicitly", () => {
+  const state = { samples: [], motions: [] };
+  const recognition = makeRecognition(state);
+  assert.equal(recognition.classify(zero(63)), null);
+  state.samples.push({ l: "Única", f: zero(63) });
+  assert.equal(recognition.classify(zero(63))?.label, "Única");
+  assert.deepEqual(normalizeAmbiguityConfig({ absoluteMargin: -1, relativeMargin: 4 }),
+    DEFAULT_AMBIGUITY_CONFIG);
 });
 
 test("static frame comparison reuses per-branch results and returns saved-example distances", () => {
@@ -225,7 +258,69 @@ test("motion recognition distinguishes opposite trajectories and rejects ambigui
     rawHolisticSequence: state.motions[0].rawHolisticSequence,
     filteredHolisticSequence: state.motions[0].filteredHolisticSequence
   });
-  assert.equal(recognition.classifyFrame(query(rightward), "raw", "motion"), null);
+  assert.equal(recognition.classifyFrame(query(rightward), "raw", "motion")?.reason, "ambiguous");
+});
+
+test("filtered references are regenerated from raw captures when the EDO config changes", () => {
+  const components = { left: true, right: false, face: false };
+  const rawFrames = Array.from({ length: 12 }, (_, frameIndex) => ({
+    time: frameIndex * 33,
+    presence: { Left: true, Right: false, face: false, faceFeatures: false },
+    hands: {
+      Left: Array.from({ length: 21 }, (_, index) => [
+        frameIndex * 0.004 + index * 0.003,
+        0.3 + index * 0.002,
+        index * 0.001
+      ])
+    }
+  }));
+  const state = { samples: [], motions: [], filterConfig: { ...DEFAULT_FILTER_CONFIG } };
+  const recognition = makeRecognition(state);
+  const reference = {
+    l: "Movimiento leve",
+    kind: "static",
+    source: "paired-raw-and-filtered-v2",
+    components,
+    rawFrames,
+    h: { hands: { Left: zero(63).map(() => 100) }, placement: null, face: null },
+    rh: { hands: { Left: zero(63) }, placement: null, face: null }
+  };
+  state.samples.push(reference);
+  const originalRaw = JSON.stringify(reference.rawFrames);
+  const originalStoredFeatures = structuredClone(reference.h);
+
+  for (const config of [
+    { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.03 },
+    { ...DEFAULT_FILTER_CONFIG, model: "second", zeta: 1.2, omegaN: 22 },
+    { ...DEFAULT_FILTER_CONFIG, model: "off" }
+  ]){
+    state.filterConfig = config;
+    recognition.prepareFilteredReferences(config);
+    const filteredFrames = recognition.filterFrames(rawFrames, config);
+    const descriptors = filteredFrames.map(frame =>
+      extractHolisticFeatures(frame, 4 / 3, components));
+    const prediction = recognition.classifyStaticDescriptor(
+      recognition.meanDescriptors(descriptors), components, "filtered");
+    assert.equal(prediction?.label, "Movimiento leve");
+    assert.ok(Math.abs(prediction.conf - 1) < 1e-12);
+  }
+  assert.equal(JSON.stringify(reference.rawFrames), originalRaw);
+  assert.deepEqual(reference.h, originalStoredFeatures);
+});
+
+test("legacy references remain unchanged and expose unavailable EDO regeneration", () => {
+  const state = { samples: [], motions: [], filterConfig: { ...DEFAULT_FILTER_CONFIG } };
+  const recognition = makeRecognition(state);
+  const legacy = {
+    l: "Legada",
+    kind: "static",
+    components: { left: true, right: false, face: false },
+    h: { hands: { Left: zero(63) }, placement: null, face: null }
+  };
+  state.samples.push(legacy);
+  recognition.prepareFilteredReferences(state.filterConfig);
+  assert.equal(recognition.hasFilterReferenceMismatch(legacy), true);
+  assert.deepEqual(legacy.h.hands.Left, zero(63));
 });
 
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {

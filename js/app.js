@@ -5,12 +5,14 @@ import { createTraining } from "./training.js";
 import { createCamera } from "./camera.js";
 import { initAuth } from "./auth.js";
 import { DEFAULT_FILTER_CONFIG, normalizeFilterConfig } from "./filters.js";
+import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 
 // Estado compartido, sin variables globales en window.
 const state = {
   samples: [], motions: [], phrase: "", capState: null, motion: null,
   readoutLock: 0, cand: null, candCount: 0, committed: null, noHand: 0,
-  ready: false, userId: null, filterConfig: { ...DEFAULT_FILTER_CONFIG }
+  ready: false, userId: null, filterConfig: { ...DEFAULT_FILTER_CONFIG },
+  ambiguityConfig: normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG)
 };
 const $ = id => document.getElementById(id);
 const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
@@ -38,6 +40,7 @@ const camera = createCamera({ state, dom, ui, training, recognition });
 state.onFilterChange = () => {
   ui.refreshFilterControls();
   camera.resetFilters();
+  recognition.prepareFilteredReferences(state.filterConfig);
 };
 state.onRecordingStart = camera.resetFilterHistory;
 training.refreshButtons();

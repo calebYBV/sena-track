@@ -170,9 +170,20 @@ function recognizeMotion(res){
   updateComparison({
     kind: "motion", detected: true, rawPrediction: raw, filteredPrediction: filtered,
     rawDistances, filteredDistances, hasReference: examples.length > 0,
-    legacyReference: examples.some(example => !example.components)
+    legacyReference: examples.some(example => !example.components),
+    referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
   });
-  if (main){
+  if (main?.reason === "ambiguous"){
+    motion.unrecognizedSince = 0;
+    if (performance.now() >= state.readoutLock){
+      signEl.textContent = "Reconocimiento ambiguo";
+      signEl.className = "sign idle";
+      metaEl.textContent = main.candidates?.length
+        ? `Candidatas: ${main.candidates.join(" / ")}` : "";
+    }
+    return;
+  }
+  if (main?.label){
     motion.unrecognizedSince = 0;
     if (motion.armed){
       motion.armed = false;
@@ -279,6 +290,7 @@ function finishMotion(){
     const legacyPair = legacyMotionPair(m.frames, aspect);
     if (legacyPair){ sample.s = legacyPair.filtered; sample.r = legacyPair.raw; }
     state.motions.push(sample);
+    recognition.prepareFilteredReferences(state.filterConfig);
     void saveAll().then(saved => {
       $("trainHint").textContent = saved
         ? `Listo: “${m.label}” guardada en Supabase. Graba unas 5 veces para mejorar la comparación.`
@@ -395,6 +407,7 @@ function capture(f){
       syncStatus: "pending"
     };
     state.samples.push(sample);
+    recognition.prepareFilteredReferences(state.filterConfig);
     void saveAll().then(saved => {
       $("trainHint").textContent = saved
         ? `Listo: “${capture.label}” guardada en Supabase.`

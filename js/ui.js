@@ -1,4 +1,8 @@
-import { calculateDistanceReduction } from "./recognition.js";
+import {
+  calculateDistanceReduction,
+  DEFAULT_AMBIGUITY_CONFIG,
+  normalizeAmbiguityConfig
+} from "./recognition.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
@@ -15,6 +19,15 @@ function setSyncStatus(text, status = "saved"){
 
 function stability(r){
   state.noHand = 0;
+  if (r?.reason === "ambiguous"){
+    state.cand = null; state.candCount = 0; state.committed = null;
+    holdBar.style.width = "0";
+    signEl.textContent = "Reconocimiento ambiguo";
+    signEl.className = "sign idle";
+    metaEl.textContent = r.candidates?.length
+      ? `Candidatas: ${r.candidates.join(" / ")}` : "";
+    return;
+  }
   const label = r ? r.label : null;
   if (label !== state.cand){ state.cand = label; state.candCount = 0; }
   state.candCount++;
@@ -176,10 +189,37 @@ for (const [id, key] of filterControls){
     if (persist) void savePreferences();
   };
   if (id === "filterTau" || id === "filterZeta" || id === "filterOmega"){
-    $(id).addEventListener("input", () => update(false));
+    $(id).addEventListener("input", () => {
+      const value = Number($(id).value);
+      if (key === "tau") $("filterTauValue").textContent = `${value.toFixed(2)} s`;
+      if (key === "zeta") $("filterZetaValue").textContent = value.toFixed(1);
+      if (key === "omegaN") $("filterOmegaValue").textContent = `${value.toFixed(0)} rad/s`;
+    });
     $(id).addEventListener("change", () => update(true));
   } else $(id).addEventListener("change", () => update(true));
 }
+function refreshAmbiguityControls(){
+  const config = normalizeAmbiguityConfig(state.ambiguityConfig || DEFAULT_AMBIGUITY_CONFIG);
+  state.ambiguityConfig = config;
+  $("ambiguityAbsolute").value = String(config.absoluteMargin);
+  $("ambiguityRelative").value = String(config.relativeMargin);
+  $("ambiguityAbsoluteValue").value = config.absoluteMargin.toFixed(2);
+  $("ambiguityRelativeValue").value = config.relativeMargin.toFixed(2);
+}
+for (const [id, key] of [
+  ["ambiguityAbsolute", "absoluteMargin"],
+  ["ambiguityRelative", "relativeMargin"]
+]){
+  $(id).addEventListener("input", () => {
+    state.ambiguityConfig = normalizeAmbiguityConfig({
+      ...state.ambiguityConfig,
+      [key]: Number($(id).value)
+    });
+    refreshAmbiguityControls();
+  });
+  $(id).addEventListener("change", () => { void savePreferences(); });
+}
+refreshAmbiguityControls();
 function refreshReferences(){
   const select = $("evaluationReference");
   const selected = select.value;
@@ -221,6 +261,7 @@ function setEvaluationEnabled(enabled){
   }
 }
 function predictionText(prediction){
+  if (prediction?.reason === "ambiguous") return "Ambigua";
   return prediction?.label || "No identificada";
 }
 function renderComparison(){
@@ -296,6 +337,9 @@ function renderComparison(){
   if (result.legacyReference){
     notes.push("La referencia incluye ejemplos heredados de manos sin datos faciales; vuelve a capturarlos si quieres añadir rostro o ambas manos.");
   }
+  if (result.referenceFilterMismatch){
+    notes.push("Algunas referencias heredadas no conservan cuadros raw suficientes para regenerar sus características con el filtro actual; su comparación EDO puede no estar alineada.");
+  }
   notes.push("Una reducción de distancia no garantiza un reconocimiento correcto.");
   $("comparisonNote").textContent = notes.join(" ");
 }
@@ -346,6 +390,13 @@ function showLocked(text, meta, ok, ms = 2500){
 }
 function show(r){
   if (performance.now() < state.readoutLock) return;
+  if (r?.reason === "ambiguous"){
+    signEl.textContent = "Reconocimiento ambiguo";
+    signEl.className = "sign idle";
+    metaEl.textContent = r.candidates?.length
+      ? `Candidatas: ${r.candidates.join(" / ")}` : "";
+    return;
+  }
   if (!r){ signEl.textContent = "Seña no reconocida"; signEl.className = "sign idle"; metaEl.textContent = ""; return; }
   signEl.textContent = r.label; signEl.className = "sign";
   metaEl.textContent = r.src + (r.conf != null
@@ -359,5 +410,5 @@ function showNoHand(){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  setSyncStatus, clearForUser, refreshGeneralControls };
+  setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
 }

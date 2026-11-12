@@ -98,6 +98,13 @@ function validateFrameSequences(rawFrames, filteredFrames, components){
   }
 }
 
+export function validateRawCapture(sample){
+  if (!sample || !validComponents(sample.components)){
+    throw new TypeError("La captura de evaluación debe indicar componentes requeridos válidos.");
+  }
+  validateFrameSequences(sample.rawFrames, sample.rawFrames, sample.components);
+}
+
 function validateStatic(sample){
   if (sample.source === "paired-raw-and-filtered-v2" && !sample.components){
     throw new TypeError("El formato holístico requiere los componentes de la seña.");

@@ -1,4 +1,5 @@
 import { normalizeFilterConfig } from "./filters.js";
+import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 import {
   prepareSamplePayload,
   SAMPLE_FORMAT_VERSION,
@@ -65,6 +66,7 @@ export function createStorage({ state, dom, ui }){
       samples: state.samples,
       motions: state.motions,
       filters: state.filterConfig,
+      ambiguity: state.ambiguityConfig,
       settings: readSettings(),
       pending: true,
       pendingDeletes: []
@@ -235,6 +237,8 @@ export function createStorage({ state, dom, ui }){
     if (cached?.pending){
       state.samples = cached.samples.map(sample => ({ ...sample, syncStatus: "pending" }));
       state.motions = cached.motions.map(sample => ({ ...sample, syncStatus: "pending" }));
+      state.ambiguityConfig = normalizeAmbiguityConfig(cached.ambiguity);
+      ui.refreshAmbiguityControls();
       applySettings(cached.settings);
       setSyncStatus("Pendiente de sincronización", "pending");
       renderList();
@@ -252,6 +256,8 @@ export function createStorage({ state, dom, ui }){
       if (newerCache?.pending && newerCache.revision !== initialRevision){
         state.samples = newerCache.samples.map(sample => ({ ...sample, syncStatus: "pending" }));
         state.motions = newerCache.motions.map(sample => ({ ...sample, syncStatus: "pending" }));
+        state.ambiguityConfig = normalizeAmbiguityConfig(newerCache.ambiguity);
+        ui.refreshAmbiguityControls();
         applySettings(newerCache.settings);
         setSyncStatus("Pendiente de sincronización", "pending");
         renderList();
@@ -260,10 +266,13 @@ export function createStorage({ state, dom, ui }){
       }
       state.samples = remote.samples;
       state.motions = remote.motions;
+      state.ambiguityConfig = normalizeAmbiguityConfig(cached?.ambiguity || DEFAULT_AMBIGUITY_CONFIG);
+      ui.refreshAmbiguityControls();
       if (remote.settings) applySettings(remote.settings);
       try {
         await storeCache({
           version: 1, samples: remote.samples, motions: remote.motions,
+          ambiguity: state.ambiguityConfig,
           settings: remote.settings || readSettings(), pending: false, pendingDeletes: []
         });
         setSyncStatus("Biblioteca sincronizada", "saved");
@@ -281,6 +290,8 @@ export function createStorage({ state, dom, ui }){
       if (cached){
         state.samples = cached.samples;
         state.motions = cached.motions;
+        state.ambiguityConfig = normalizeAmbiguityConfig(cached.ambiguity);
+        ui.refreshAmbiguityControls();
         applySettings(cached.settings);
         setSyncStatus(`Error al cargar; se usa la copia local. ${error.message}`, "error");
       } else {
@@ -547,6 +558,7 @@ export function createStorage({ state, dom, ui }){
     cache.samples = state.samples;
     cache.motions = state.motions;
     cache.filters = state.filterConfig;
+    cache.ambiguity = state.ambiguityConfig;
     cache.settings = readSettings();
     cache.settingsPending = true;
     try {
@@ -570,6 +582,7 @@ export function createStorage({ state, dom, ui }){
     if (!userId) return;
     const cache = await readCache() || currentSnapshot();
     cache.filters = state.filterConfig;
+    cache.ambiguity = state.ambiguityConfig;
     cache.settings = readSettings();
     cache.settingsPending = true;
     try {
@@ -788,11 +801,13 @@ export function createStorage({ state, dom, ui }){
       state.samples = [];
       state.motions = [];
       state.filterConfig = normalizeFilterConfig(null);
+      state.ambiguityConfig = normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG);
       $("tol").value = "0.8";
       $("tolM").value = "0.7";
       $("dur").value = "2";
       $("speechEnabled").checked = true;
       ui.refreshGeneralControls();
+      ui.refreshAmbiguityControls();
     }
   };
 }
