@@ -9,7 +9,7 @@ const MODEL_FACE = "https://storage.googleapis.com/mediapipe-models/face_landmar
 export function createCamera({ state, dom, ui, training, recognition }){
 const { $, video, canvas, ctx, statusEl } = dom;
 const { renderList, show, stability, showNoHand, lostHand, updateComparison,
-  updateTrackingMetrics, setNote } = ui;
+  updateTrackingMetrics, setNote, setEvaluationEnabled } = ui;
 const { refreshKind, refreshButtons, capture, tickMotion, resetTracking } = training;
 const { compareStaticFrames } = recognition;
 let landmarker = null, faceLandmarker = null, drawing = null, stream = null;

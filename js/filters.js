@@ -37,7 +37,7 @@ export function calculateVibrationReduction(raw, filtered){
 
 export function estimateTrackingLag(samples){
   if (samples.length < 18) return null;
-  const raw = [], filtered = [];
+  const raw = [], filtered = [], times = [];
   for (let i = 1; i < samples.length; i++){
     const dt = (samples[i].time - samples[i - 1].time) / 1000;
     if (dt <= 0) continue;
@@ -49,23 +49,26 @@ export function estimateTrackingLag(samples){
       (samples[i].filtered.x - samples[i - 1].filtered.x) * samples[i].aspect / dt,
       (samples[i].filtered.y - samples[i - 1].filtered.y) / dt
     ]);
+    times.push(samples[i].time);
   }
   const maxLag = Math.min(10, Math.floor(raw.length / 4));
   let best = null;
   for (let lag = 0; lag <= maxLag; lag++){
     const pairs = [];
     for (let i = lag; i < raw.length; i++) pairs.push([raw[i - lag], filtered[i]]);
-    const means = [0, 0];
+    const rawMeans = [0, 0], filteredMeans = [0, 0];
     for (const [a, b] of pairs){
-      means[0] += a[0] + b[0];
-      means[1] += a[1] + b[1];
+      rawMeans[0] += a[0]; rawMeans[1] += a[1];
+      filteredMeans[0] += b[0]; filteredMeans[1] += b[1];
     }
-    const count = pairs.length * 2;
-    means[0] /= count; means[1] /= count;
+    for (let axis = 0; axis < 2; axis++){
+      rawMeans[axis] /= pairs.length;
+      filteredMeans[axis] /= pairs.length;
+    }
     let covariance = 0, rawEnergy = 0, filteredEnergy = 0;
     for (const [a, b] of pairs){
       for (let axis = 0; axis < 2; axis++){
-        const x = a[axis] - means[axis], y = b[axis] - means[axis];
+        const x = a[axis] - rawMeans[axis], y = b[axis] - filteredMeans[axis];
         covariance += x * y;
         rawEnergy += x * x;
         filteredEnergy += y * y;
@@ -76,9 +79,9 @@ export function estimateTrackingLag(samples){
     if (!best || correlation > best.correlation) best = { lag, correlation };
   }
   if (!best || best.correlation < 0.6) return null;
-  const intervals = samples.slice(1).map((sample, i) => sample.time - samples[i].time);
-  const frameMs = intervals.reduce((sum, value) => sum + value, 0) / intervals.length;
-  return best.lag * frameMs;
+  const delays = [];
+  for (let i = best.lag; i < times.length; i++) delays.push(times[i] - times[i - best.lag]);
+  return delays.reduce((sum, value) => sum + value, 0) / delays.length;
 }
 
 export function createEdoFilter(){

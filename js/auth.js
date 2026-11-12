@@ -239,6 +239,7 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     const reveal = password.type === "password";
     password.type = reveal ? "text" : "password";
     toggle.textContent = reveal ? "Ocultar" : "Ver";
+    toggle.setAttribute("aria-label", reveal ? "Ocultar contraseña" : "Mostrar contraseña");
   });
 
   logoutBtn.addEventListener("click", async () => {

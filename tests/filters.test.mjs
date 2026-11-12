@@ -113,3 +113,57 @@ test("lag estimator detects temporal offset and rejects stationary trajectories"
   }));
   assert.equal(estimateTrackingLag(stationary), null);
 });
+
+test("lag estimation is invariant to different mean velocities in raw and filtered tracks", () => {
+  const oscillation = i => Math.sin(i * 0.24) + 0.35 * Math.sin(i * 0.79);
+  const samples = Array.from({ length: 80 }, (_, i) => ({
+    raw: { x: 0.1 * i + oscillation(i), y: 0 },
+    filtered: { x: oscillation(Math.max(0, i - 2)), y: 0 },
+    time: i * 33.333,
+    aspect: 1
+  }));
+  const lag = estimateTrackingLag(samples);
+  assert.ok(Math.abs(lag - 66.666) < 1);
+});
+
+test("filter comparison measures the same quiet and moving traces for all three models", () => {
+  const models = ["off", "first", "second"];
+  const errors = Object.fromEntries(models.map(model => [model, []]));
+  const quietValues = Object.fromEntries(models.map(model => [model, []]));
+  const filters = Object.fromEntries(models.map(model => [model, createEdoFilter()]));
+  const configs = Object.fromEntries(models.map(model => [model, {
+    ...DEFAULT_FILTER_CONFIG, model
+  }]));
+
+  for (let i = 0; i < 240; i++){
+    const timestamp = i * 33.333;
+    const truth = 0.4 + 0.12 * Math.sin(i * 0.08);
+    const noise = 0.025 * (Math.sin(i * 1.71) + 0.6 * Math.sin(i * 2.39));
+    const input = [{ x: truth + noise, y: 0.5 + noise, z: 0 }];
+    for (const model of models){
+      const actual = filters[model].process(input, "hand:Left", timestamp, configs[model])[0].x;
+      errors[model].push((actual - truth) ** 2);
+    }
+
+    const quietNoise = 0.025 * (Math.sin(i * 1.71) + 0.6 * Math.sin(i * 2.39));
+    const quietInput = [{ x: 0.4 + quietNoise, y: 0.5 + quietNoise, z: 0 }];
+    for (const model of models){
+      quietValues[model].push(filters[model].process(
+        quietInput, "quiet:hand", timestamp, configs[model]
+      )[0].x);
+    }
+  }
+
+  const rmse = Object.fromEntries(models.map(model => [model,
+    Math.sqrt(errors[model].reduce((sum, value) => sum + value, 0) / errors[model].length)
+  ]));
+  const deviation = model => {
+    const values = quietValues[model].slice(20);
+    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+    return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
+  };
+  assert.ok(rmse.first < rmse.off);
+  assert.ok(rmse.second > rmse.off);
+  assert.ok(deviation("first") < deviation("off"));
+  assert.ok(deviation("second") < deviation("off"));
+});

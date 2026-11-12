@@ -31,7 +31,7 @@
           <label for="lfPass">Contraseña</label>
           <div class="lf-input-wrap">
             <input id="lfPass" type="password" autocomplete="current-password" minlength="8" placeholder="Al menos 8 caracteres" required>
-            <button type="button" class="lf-toggle" id="lfToggle">Ver</button>
+            <button type="button" class="lf-toggle" id="lfToggle" aria-label="Mostrar contraseña">Ver</button>
           </div>
         </div>
         <div class="lf-row-between"><a href="#" id="lfForgot">¿Olvidaste tu contraseña?</a></div>
@@ -137,7 +137,7 @@
         </div>
         <p class="hint component-status" id="componentStatus" aria-live="polite">Manos: esperando · Rostro: esperando</p>
         <button id="btnMotion" class="btn lime motion-button" type="button" aria-pressed="false">Reconocer movimiento</button>
-        <p class="hint">Activa el reconocimiento continuo de movimientos ya enseñados; no guarda capturas. Pulsa de nuevo para detenerlo.</p>
+        <p class="hint">Reconoce continuamente movimientos enseñados; no guarda capturas. Pulsa de nuevo para detener.</p>
         <p class="note" id="note" aria-live="polite"></p>
       </section>
 

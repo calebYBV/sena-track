@@ -81,7 +81,10 @@ function renderList(){
     cnt.textContent = g.t === "s"
       ? `${captureCount} capturas`
       : `${captureCount} grabaciones`;
-    const b = document.createElement("button"); b.className = "btn line"; b.textContent = "Borrar";
+    const b = document.createElement("button");
+    b.className = "btn line";
+    b.textContent = "Borrar";
+    b.setAttribute("aria-label", `Borrar seña ${g.l}`);
     b.onclick = () => {
       void deleteSign(g.l, g.t).catch(error => {
         console.error("No se pudo eliminar la seña.", error);
