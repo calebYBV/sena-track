@@ -8,52 +8,148 @@ function predictionOf(value){
 }
 
 export function assertIndependentEvaluationSet(training, evaluation, options = {}){
-  if (!Array.isArray(training) || !Array.isArray(evaluation) || !evaluation.length){
-    throw new TypeError("El conjunto de evaluación debe contener muestras etiquetadas.");
+  return checkIndependentSplits(
+    [{ name: "entrenamiento", samples: training },
+      { name: "evaluación", samples: evaluation }],
+    options,
+    { allowEmptyTraining: true }
+  );
+}
+
+function checkIndependentSplits(splits, options = {}, { allowEmptyTraining = false } = {}){
+  if (!Array.isArray(splits) || splits.length < 2 ||
+      splits.some(({ samples }) => !Array.isArray(samples))){
+    throw new TypeError("Los conjuntos deben proporcionarse como arreglos de muestras.");
   }
-  const trainingCaptures = new Set();
-  for (const sample of training){
-    if (!sample || typeof sample.captureId !== "string" || !sample.captureId){
-      throw new TypeError("Cada muestra de entrenamiento debe incluir captureId para comprobar independencia.");
-    }
-    if (trainingCaptures.has(sample.captureId)){
-      throw new Error(`La captura ${sample.captureId} está duplicada en entrenamiento.`);
-    }
-    trainingCaptures.add(sample.captureId);
+  const training = splits[0].samples;
+  const evaluationSplits = splits.slice(1);
+  if ((!allowEmptyTraining && !training.length) ||
+      evaluationSplits.some(({ samples }) => !samples.length)){
+    throw new TypeError("Entrenamiento, validación y prueba deben contener muestras.");
   }
-  const evaluationCaptures = new Set();
-  const trainingSessions = new Set(training
-    .filter(sample => sample.participantId && sample.sessionId)
-    .map(sample => `${sample.participantId}:${sample.sessionId}`));
-  const trainingParticipants = new Set(training.map(sample => sample.participantId).filter(Boolean));
-  if (options.separateParticipants &&
-      [...training, ...evaluation].some(sample => !sample?.participantId)){
-    throw new TypeError("La separación por participante requiere participantId en todos los registros.");
+
+  const captureOwners = new Map();
+  const participantOwners = new Map();
+  const sessionOwners = new Map();
+  const allSamples = splits.flatMap(({ name, samples }) =>
+    samples.map(sample => ({ name, sample })));
+  const completeSessions = allSamples.length > 0 && allSamples.every(({ sample }) =>
+    typeof sample?.participantId === "string" && sample.participantId.trim() &&
+    typeof sample?.sessionId === "string" && sample.sessionId.trim());
+  const completeParticipants = allSamples.length > 0 && allSamples.every(({ sample }) =>
+    typeof sample?.participantId === "string" && sample.participantId.trim());
+
+  if (options.separateSessions && !completeSessions){
+    throw new TypeError("La separación por sesión requiere participantId y sessionId seudónimos en todos los conjuntos.");
   }
-  for (const sample of evaluation){
-    if (!sample || typeof sample.captureId !== "string" || !sample.captureId ||
-        typeof sample.truth !== "string" || !sample.truth.trim()){
-      throw new TypeError("Cada muestra de evaluación debe incluir captureId y etiqueta truth.");
-    }
-    if (evaluationCaptures.has(sample.captureId) || trainingCaptures.has(sample.captureId)){
-      throw new Error(`La captura ${sample.captureId} aparece en entrenamiento y evaluación, o está duplicada.`);
-    }
-    evaluationCaptures.add(sample.captureId);
-    if (sample.participantId && sample.sessionId){
-      const sessionKey = `${sample.participantId}:${sample.sessionId}`;
-      if (trainingSessions.has(sessionKey)){
-        throw new Error(`La sesión ${sessionKey} no es independiente entre entrenamiento y evaluación.`);
+  if (options.separateParticipants && !completeParticipants){
+    throw new TypeError("La separación por participante requiere participantId seudónimos en todos los conjuntos.");
+  }
+
+  for (const { name, samples } of splits){
+    const capturesInSplit = new Set();
+    for (const sample of samples){
+      if (!sample || typeof sample.captureId !== "string" ||
+          !sample.captureId.trim() || sample.captureId.length > 128){
+        throw new TypeError(`Cada muestra de ${name} debe incluir captureId de 1 a 128 caracteres.`);
+      }
+      if (name !== "entrenamiento" &&
+          (typeof sample.truth !== "string" || !sample.truth.trim())){
+        throw new TypeError(`Cada muestra de ${name} debe incluir una etiqueta truth no vacía.`);
+      }
+      if (capturesInSplit.has(sample.captureId)){
+        throw new Error(`La captura ${sample.captureId} está duplicada en ${name}.`);
+      }
+      capturesInSplit.add(sample.captureId);
+      const previousCaptureOwner = captureOwners.get(sample.captureId);
+      if (previousCaptureOwner){
+        throw new Error(`La captura ${sample.captureId} aparece en ${previousCaptureOwner} y ${name}.`);
+      }
+      captureOwners.set(sample.captureId, name);
+
+      for (const field of ["participantId", "sessionId"]){
+        if (sample[field] !== undefined &&
+            (typeof sample[field] !== "string" || !sample[field].trim())){
+          throw new TypeError(`${field} debe ser un identificador seudónimo no vacío.`);
+        }
+      }
+      if (sample.participantId){
+        const previousParticipantSplit = participantOwners.get(sample.participantId);
+        if (options.separateParticipants && previousParticipantSplit &&
+            previousParticipantSplit !== name){
+          throw new Error(`El participante ${sample.participantId} aparece en ${previousParticipantSplit} y ${name}.`);
+        }
+        participantOwners.set(sample.participantId, name);
+      }
+      if (sample.participantId && sample.sessionId){
+        const sessionKey = JSON.stringify([sample.participantId, sample.sessionId]);
+        const previousSessionSplit = sessionOwners.get(sessionKey);
+        if (previousSessionSplit && previousSessionSplit !== name){
+          throw new Error(`La sesión ${sample.sessionId} del participante ${sample.participantId} aparece en ${previousSessionSplit} y ${name}.`);
+        }
+        sessionOwners.set(sessionKey, name);
       }
     }
-    if (options.separateParticipants && trainingParticipants.has(sample.participantId)){
-      throw new Error(`El participante ${sample.participantId} aparece en entrenamiento y evaluación.`);
+  }
+
+  return {
+    captureIdsDisjoint: true,
+    sessionSeparationChecked: completeSessions,
+    participantSeparationChecked: Boolean(options.separateParticipants)
+  };
+}
+
+export function assertIndependentEvaluationSets(training, validation, test, options = {}){
+  return checkIndependentSplits([
+    { name: "entrenamiento", samples: training },
+    { name: "validación", samples: validation },
+    { name: "prueba", samples: test }
+  ], options);
+}
+
+export function replayStaticConfirmation(frames, classify, confirmationFrames = 15){
+  if (!Array.isArray(frames) || !frames.length || typeof classify !== "function"){
+    throw new TypeError("El replay estático requiere cuadros y una función clasificadora.");
+  }
+  if (!Number.isInteger(confirmationFrames) || confirmationFrames < 1){
+    throw new RangeError("confirmationFrames debe ser un entero positivo.");
+  }
+  const startTime = frames[0]?.time;
+  if (!Number.isFinite(startTime) || frames.some((frame, index) =>
+    !Number.isFinite(frame?.time) || index > 0 && frame.time <= frames[index - 1].time)){
+    throw new TypeError("Los cuadros del replay requieren tiempos finitos y estrictamente crecientes.");
+  }
+
+  let candidate = null, candidateCount = 0, ambiguousPrediction = null;
+  for (const frame of frames){
+    const result = classify(frame);
+    const prediction = predictionOf(result);
+    if (prediction.reason === "ambiguous"){
+      candidate = null;
+      candidateCount = 0;
+      ambiguousPrediction = result;
+      continue;
+    }
+    const label = prediction.label;
+    if (label !== candidate){
+      candidate = label;
+      candidateCount = 0;
+    }
+    candidateCount++;
+    if (label && candidateCount === confirmationFrames){
+      return {
+        prediction: result,
+        latencyMs: frame.time - startTime,
+        confirmed: true,
+        ambiguousObserved: Boolean(ambiguousPrediction)
+      };
     }
   }
   return {
-    captureIdsDisjoint: true,
-    sessionSeparationChecked: training.length > 0 &&
-      [...training, ...evaluation].every(sample => sample.participantId && sample.sessionId),
-    participantSeparationChecked: Boolean(options.separateParticipants)
+    prediction: ambiguousPrediction,
+    latencyMs: null,
+    confirmed: false,
+    ambiguousObserved: Boolean(ambiguousPrediction)
   };
 }
 
@@ -66,7 +162,7 @@ export function calculateClassificationMetrics(records){
       throw new TypeError("Cada resultado debe incluir una etiqueta truth no vacía.");
     }
     const prediction = predictionOf(record.prediction);
-    if (record.latencyMs !== undefined &&
+    if (record.latencyMs !== undefined && record.latencyMs !== null &&
         (!Number.isFinite(record.latencyMs) || record.latencyMs < 0)){
       throw new TypeError("La latencia debe ser un valor finito no negativo.");
     }

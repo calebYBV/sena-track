@@ -1,13 +1,14 @@
 import {
   calculateDistanceReduction,
   DEFAULT_AMBIGUITY_CONFIG,
-  normalizeAmbiguityConfig
+  normalizeAmbiguityConfig,
+  STATIC_CONFIRMATION_FRAMES
 } from "./recognition.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
-const HOLD = 15, CAPTURE_FRAMES = 40;
+const HOLD = STATIC_CONFIRMATION_FRAMES, CAPTURE_FRAMES = 40;
 let lastComparison = null;
 function setNote(t){ noteEl.textContent = t; }
 function setSyncStatus(text, status = "saved"){

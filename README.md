@@ -75,15 +75,21 @@ Ejecuta las pruebas numéricas de los filtros y de la comparación con `npm test
 
 ### Evaluación reproducible con capturas independientes
 
-Se puede calcular exactitud, precisión/recall/F1 por clase, macro-F1, matriz de confusión, falsos positivos, rechazos, ambigüedad y latencia local desde Node:
+El evaluador compara exactitud, precisión/recall/F1 por clase, macro-F1, matriz de confusión, falsos positivos, rechazos y ambigüedad usando tres archivos separados: biblioteca de entrenamiento, validación y prueba final.
 
 ```bash
-npm run evaluate -- referencias.json prueba-etiquetada.json
+npm run evaluate -- entrenamiento.json validacion.json prueba.json --session-split
 ```
 
-`referencias.json` es una exportación de la biblioteca de entrenamiento; el evaluador exige referencias holísticas v2 con `captureId` y cuadros raw. `prueba-etiquetada.json` debe tener `{"samples":[...]}`; cada registro requiere `captureId`, `truth`, `kind`, `components`, `source:"paired-raw-and-filtered-v2"` y `rawFrames` válidos. Se puede definir en la raíz `aspectRatio` (por defecto 4:3), `staticTolerance`, `motionTolerance` y `ambiguityConfig`; usa la misma relación de aspecto que las capturas. Las capturas de prueba deben ser nuevas, nunca las mismas grabaciones de entrenamiento. Se pueden añadir `participantId` y `sessionId` a cada registro para que el script rechace sesiones compartidas. Añade `--participant-split` para exigir que ningún participante se comparta entre ambos conjuntos.
+`entrenamiento.json` es una exportación de la biblioteca y debe contener referencias holísticas v2 con `captureId` y cuadros raw. Los otros dos archivos deben tener `{"samples":[...]}`. Cada registro de validación y prueba requiere `captureId`, `truth`, `kind` (`static` o `motion`), `components`, `source:"paired-raw-and-filtered-v2"` y `rawFrames` válidos. Los identificadores de participante y sesión son seudónimos, por ejemplo `P03` y `P03-S02`; no incluyas nombres, correos ni otros datos identificables.
 
-El evaluador reprocesa las mismas coordenadas de prueba con EDO desactivada, primer orden y segundo orden; regenera en memoria las referencias de entrenamiento para cada modelo y devuelve resultados separados. No escribe a Supabase ni altera las exportaciones. La latencia informada incluye reprocesamiento local y clasificación, no inferencia MediaPipe, carga de modelos ni preparación inicial de referencias. La salida solo representa esas capturas etiquetadas; no se deben generalizar métricas con pocos ejemplos o sin partición independiente. No hay un corpus real incluido en el repositorio, así que las métricas reales permanecen no disponibles hasta recopilar y etiquetar capturas independientes.
+El evaluador exige IDs de captura distintos en los tres conjuntos y detecta sesiones compartidas siempre que todos los registros tengan `participantId` y `sessionId`. `--session-split` exige ambos IDs; `--participant-split` exige que tampoco se comparta participante entre los tres conjuntos. Si no se solicita separación estricta y falta metadata, la salida marca que no pudo verificarse. Las referencias de entrenamiento capturadas por la aplicación todavía no incorporan esos IDs; añádelos como metadata seudónima al archivo experimental si el protocolo lo requiere.
+
+El CLI toma las tolerancias y `ambiguityConfig` únicamente del archivo de validación (valores por defecto si no se indican); nunca lee esos parámetros del archivo de prueba ni los ajusta automáticamente. Usa validación para elegirlos y congélalos antes de ejecutar la prueba final. El `aspectRatio` común se toma de validación, luego de entrenamiento, o usa 4:3 por defecto.
+
+Los tres modelos procesan las mismas coordenadas raw y regeneran en memoria las referencias para cada configuración. Para señas estáticas, el replay aplica el requisito de producción de 15 predicciones consecutivas y reporta el tiempo desde el primer cuadro hasta esa confirmación; no incluye inferencia MediaPipe ni sabe cuándo comenzó realmente el gesto. Para señas dinámicas, las métricas siguen siendo evaluación offline del clip completo; su latencia es tiempo local de filtrado y clasificación, no el tiempo de respuesta de la ventana deslizante/rearme en vivo. El resultado devuelve métricas separadas por partición y tipo de seña. No escribe a Supabase ni altera exportaciones.
+
+Protocolo recomendado: (1) asigna cada grabación a un único split antes de analizarla; (2) mantén entrenamiento, validación y prueba en sesiones distintas; (3) si se busca generalización a personas nuevas, usa participantes distintos y `--participant-split`; (4) calibra con validación y ejecuta la prueba una sola vez con parámetros congelados; (5) reporta la cantidad de capturas, participantes, sesiones y ejemplos por clase junto con las métricas. El repositorio no incluye un corpus humano, así que las pruebas sintéticas no son evidencia de precisión real.
 
 ## Probar la cámara
 
@@ -92,6 +98,7 @@ El evaluador reprocesa las mismas coordenadas de prueba con EDO desactivada, pri
 3. En **Enseñar una seña**, selecciona las manos y/o el rostro que requiere la seña. Registra ejemplos fijos y con movimiento y comprueba que los ejemplos sincronizados aparezcan en **Mis señas** y se reconozcan.
 4. Prueba los controles de frase, los ajustes, la importación/exportación y la lectura por voz.
 5. Cierra sesión y vuelve a entrar para comprobar que los ejemplos siguen guardados.
+6. Para validar lateralidad, con la cámara frontal muestra primero solo tu mano derecha y luego solo tu izquierda, manteniendo el rostro y la otra mano fuera de cuadro. Comprueba que **Mano derecha: detectada** y **Mano izquierda: detectada** correspondan a la mano física, en ese orden; repite varias veces y en otra cámara si está disponible. El video y el canvas se espejan con CSS, pero la inferencia recibe el elemento de video. No inviertas etiquetas automáticamente si esta prueba no confirma un error.
 
 Si el navegador deniega la cámara, revisa los permisos del sitio y recarga. La aplicación también informa si no encuentra una cámara, si otra aplicación la está usando o si MediaPipe no puede cargarse.
 
@@ -139,6 +146,7 @@ La comprobación de aislamiento requiere un proyecto desplegado y dos sesiones a
 
 - [Supabase Auth: JavaScript](https://supabase.com/docs/reference/javascript/auth-signup), [confirmación y URL de retorno](https://supabase.com/docs/guides/auth/redirect-urls), [recuperación de contraseña](https://supabase.com/docs/guides/auth/passwords).
 - [Row Level Security](https://supabase.com/docs/guides/database/postgres/row-level-security) y [control de acceso de Storage](https://supabase.com/docs/guides/storage/security/access-control).
+- [MediaPipe Hand Landmarker para Web](https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker): la tarea entrega landmarks y categorías de lateralidad; la página consultada no especifica una inversión de etiquetas en función del espejo visual, por lo que la app debe comprobarlo con cámara real.
 
 ## Verificación
 
