@@ -19,7 +19,11 @@ La primera vista distribuye enseñanza y biblioteca a la izquierda, cámara y vo
 
 El filtro de primer orden integra `dy/dt = (u - y) / tau` con Euler explícito y subpasos `h <= tau/4`. El de segundo orden integra `a = omegaN²*(u-y) - 2*zeta*omegaN*v` mediante Euler semiimplícito, actualizando primero `v` y luego `y`, con `h <= min(0.1/omegaN, 0.1/(2*zeta*omegaN))`. Ambos usan el tiempo monotónico real entre cuadros, conservan estado independiente por mano, rostro, punto y eje, se inicializan desde la primera medición válida y reinician tras una pérdida o pausa superior a 500 ms. El filtro no altera el video. La rama sin filtro sigue siendo la salida de MediaPipe y puede incluir su propio procesamiento interno. Cada captura conserva sus coordenadas sincronizadas, parámetros y metadatos del método/versionado del filtro.
 
+Al cambiar el modelo o sus parámetros, las referencias holísticas v2 se reprocesan en memoria desde sus cuadros raw para que coincidan con la configuración activa; no se actualizan registros remotos. La misma EDO se aplica a los 32 rasgos faciales extraídos por cuadro, además de suavizar landmarks. Ejemplos heredados que no incluyen suficientes cuadros raw mantienen compatibilidad con sus descriptores guardados, pero la comparación indica que no se pudieron regenerar con el filtro actual. No se inventan coordenadas ni se reemplazan los originales.
+
 La comparación de distancias selecciona un mismo ejemplo guardado por etiqueta para las ramas raw y EDO. El indicador se pone verde si EDO reduce la distancia y rojo si la aumenta; esto mide cercanía a la referencia, no un acierto ni una mejora validada del reconocimiento. En modo automático la etiqueta se presenta como candidata y no confirma la intención del usuario. La interfaz también informa una reducción de vibración calculada solo durante segmentos de baja velocidad raw y un retraso añadido estimado mediante correlación temporal de la trayectoria de la muñeca. La correlación centra por separado cada trayectoria antes de compararlas y usa las marcas de tiempo observadas para convertir el desfase a milisegundos. Son mediciones observacionales de la sesión, no resultados garantizados ni el tiempo de cómputo o de confirmación de seña; cuando los datos no permiten calcularlas, se indica así.
+
+La clasificación compara las dos clases distintas más cercanas. Si su diferencia absoluta y relativa son simultáneamente inferiores a los márgenes de rechazo, informa **Reconocimiento ambiguo** y no añade una etiqueta a la frase. Los márgenes iniciales (0.04 unidades de distancia y 0.08 relativas) son provisionales y ajustables en los controles avanzados; no son umbrales estadísticamente calibrados. Una sola clase puede aceptarse si pasa la tolerancia configurada. La puntuación mostrada no es una probabilidad.
 
 El contador de **Mis señas** cuenta registros de captura únicos por seña, deduplicados por su identificador de captura o de sincronización; no usa la fecha como identificador, porque distintas capturas pueden compartirla. En muestras heredadas sin esos identificadores, cuenta cada registro como un ejemplo. No infiere capturas a partir de la cantidad de cuadros de una muestra.
 
@@ -68,6 +72,18 @@ Abre <http://localhost:8000>. No abras `index.html` directamente desde el sistem
 En GitHub Pages se puede publicar la carpeta raíz del proyecto; las referencias a CSS, JavaScript e imágenes son relativas y funcionan dentro de una subcarpeta.
 
 Ejecuta las pruebas numéricas de los filtros y de la comparación con `npm test` (requiere Node.js; la app en navegador no requiere compilación). Incluyen una comparación reproducible de los tres modos EDO con las mismas trazas sintéticas quieta y dinámica. Esa medición caracteriza estabilidad/seguimiento en el fixture, no precisión de reconocimiento real.
+
+### Evaluación reproducible con capturas independientes
+
+Se puede calcular exactitud, precisión/recall/F1 por clase, macro-F1, matriz de confusión, falsos positivos, rechazos, ambigüedad y latencia local desde Node:
+
+```bash
+npm run evaluate -- referencias.json prueba-etiquetada.json
+```
+
+`referencias.json` es una exportación de la biblioteca de entrenamiento; el evaluador exige referencias holísticas v2 con `captureId` y cuadros raw. `prueba-etiquetada.json` debe tener `{"samples":[...]}`; cada registro requiere `captureId`, `truth`, `kind`, `components`, `source:"paired-raw-and-filtered-v2"` y `rawFrames` válidos. Se puede definir en la raíz `aspectRatio` (por defecto 4:3), `staticTolerance`, `motionTolerance` y `ambiguityConfig`; usa la misma relación de aspecto que las capturas. Las capturas de prueba deben ser nuevas, nunca las mismas grabaciones de entrenamiento. Se pueden añadir `participantId` y `sessionId` a cada registro para que el script rechace sesiones compartidas. Añade `--participant-split` para exigir que ningún participante se comparta entre ambos conjuntos.
+
+El evaluador reprocesa las mismas coordenadas de prueba con EDO desactivada, primer orden y segundo orden; regenera en memoria las referencias de entrenamiento para cada modelo y devuelve resultados separados. No escribe a Supabase ni altera las exportaciones. La latencia informada incluye reprocesamiento local y clasificación, no inferencia MediaPipe, carga de modelos ni preparación inicial de referencias. La salida solo representa esas capturas etiquetadas; no se deben generalizar métricas con pocos ejemplos o sin partición independiente. No hay un corpus real incluido en el repositorio, así que las métricas reales permanecen no disponibles hasta recopilar y etiquetar capturas independientes.
 
 ## Probar la cámara
 
@@ -132,7 +148,7 @@ La comprobación de aislamiento requiere un proyecto desplegado y dos sesiones a
 
 - HTML, CSS y JavaScript nativo con módulos ES.
 - MediaPipe Tasks Vision para puntos de referencia de manos y rostro; las características faciales compactas intervienen únicamente en las señas que requieren rostro.
-- KNN para señas estáticas y DTW para secuencias de movimiento.
+- Vecino más cercano con rechazo de ambigüedad para señas estáticas y DTW para secuencias de movimiento.
 - Integración seleccionable de filtros EDO, con referencia de entrenamiento pareada para comparar ambas ramas.
 - Web Speech API para la síntesis de voz, si está disponible en el navegador.
 

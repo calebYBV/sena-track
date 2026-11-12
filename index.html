@@ -290,6 +290,16 @@
         </label>
         <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span>Mostrar puntos originales de MediaPipe</span></label>
       </div>
+      <details class="ambiguity-settings">
+        <summary>Rechazo de resultados ambiguos</summary>
+        <p>Valores iniciales provisionales; calibra con capturas independientes etiquetadas.</p>
+        <label for="ambiguityAbsolute">Diferencia absoluta <output id="ambiguityAbsoluteValue">0.04</output>
+          <input id="ambiguityAbsolute" type="range" min="0" max="0.20" step="0.01" value="0.04">
+        </label>
+        <label for="ambiguityRelative">Diferencia relativa <output id="ambiguityRelativeValue">0.08</output>
+          <input id="ambiguityRelative" type="range" min="0" max="0.50" step="0.01" value="0.08">
+        </label>
+      </details>
       <details class="calculation-details">
         <summary>Ver cálculo numérico</summary>
         <div id="firstCalculation" class="calculation-copy">

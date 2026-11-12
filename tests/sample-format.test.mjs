@@ -4,6 +4,7 @@ import {
   prepareSamplePayload,
   SAMPLE_FORMAT_VERSION,
   SAMPLE_STORAGE_THRESHOLD_BYTES,
+  validateRawCapture,
   validateSample
 } from "../js/sampleFormat.js";
 
@@ -176,4 +177,21 @@ test("invalid landmark dimensions, non-finite values, and unordered times are re
     rawFrames: frames,
     source: "paired-raw-and-filtered-v1"
   }, "motion"), /orden temporal inválido/);
+});
+
+test("held-out raw captures validate without requiring training descriptors", () => {
+  const rawFrames = Array.from({ length: 8 }, (_, index) => ({
+    time: index * 20,
+    presence: { Left: true, Right: false, face: false, faceFeatures: false },
+    hands: { Left: landmarks() }
+  }));
+  const capture = {
+    components: { left: true, right: false, face: false },
+    rawFrames
+  };
+  assert.doesNotThrow(() => validateRawCapture(capture));
+  assert.throws(() => validateRawCapture({
+    ...capture,
+    rawFrames: rawFrames.slice(0, 7)
+  }), /sincronizados/);
 });

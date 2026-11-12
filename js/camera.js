@@ -148,17 +148,11 @@ function drawFace(timestamp, activeIdentities){
   const blendshapes = result.faceBlendshapes?.[0]?.categories;
   const rawFeatures = extractFaceFeatures(raw, blendshapes, matrix,
     video.videoWidth / video.videoHeight);
-  let filteredFeatures = null;
-  if (matrix?.length === 16 && blendshapes?.length){
-    const filteredMatrix = edo.process(matrix.map(value => ({ x: value, y: 0, z: 0 })),
-      "face:transformation-matrix", timestamp, state.filterConfig).map(point => point.x);
-    const filteredBlendshapes = edo.process(blendshapes.map(category =>
-      ({ x: category.score, y: 0, z: 0 })), "face:blendshapes", timestamp,
-    state.filterConfig).map((point, index) => ({ ...blendshapes[index], score: point.x }));
-    filteredFeatures = extractFaceFeatures(filtered, filteredBlendshapes, filteredMatrix,
-      video.videoWidth / video.videoHeight);
-    activeIdentities.push("face:transformation-matrix", "face:blendshapes");
-  }
+  const filteredFeatures = rawFeatures
+    ? edo.process(rawFeatures.map(value => ({ x: value, y: 0, z: 0 })),
+      "face:features", timestamp, state.filterConfig).map(point => point.x)
+    : null;
+  if (filteredFeatures) activeIdentities.push("face:features");
   return { rawLandmarks: raw, filteredLandmarks: filtered,
     rawFeatures, filteredFeatures };
 }
@@ -196,7 +190,8 @@ function compareStatic(track){
   updateComparison({
     kind: "static", detected: true, rawPrediction, filteredPrediction, rawDistances, filteredDistances,
     hasReference: examples.length > 0,
-    legacyReference: examples.some(sample => !sample.components)
+    legacyReference: examples.some(sample => !sample.components),
+    referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
   });
   return { rawPrediction, filteredPrediction };
 }
@@ -279,7 +274,7 @@ function processFrame(){
         });
         const mainPrediction = state.filterConfig.model === "off"
           ? predictions.rawPrediction : predictions.filteredPrediction;
-        if (!mainPrediction && requiredMissing){
+        if (!mainPrediction?.label && requiredMissing){
           $("sign").textContent = "Mano o rostro requerido fuera de cámara";
           $("sign").className = "sign idle";
           $("meta").textContent = "";
@@ -295,7 +290,7 @@ function processFrame(){
         const predictions = compareStatic({ rawFrame, filteredFrame });
         const mainPrediction = state.filterConfig.model === "off"
           ? predictions.rawPrediction : predictions.filteredPrediction;
-        if (!mainPrediction && requiredMissing){
+        if (!mainPrediction?.label && requiredMissing){
           $("sign").textContent = "Mano o rostro requerido fuera de cámara";
           $("sign").className = "sign idle";
           $("meta").textContent = "";

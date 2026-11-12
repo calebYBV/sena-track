@@ -90,6 +90,9 @@ test("bimanual recognition compares both hands and their relative position", () 
   const descriptor = extractHolisticFeatures(registered, 4 / 3, required);
   state.samples.push({ l: "Bimanual", components: required, h: descriptor, rh: descriptor });
   assert.equal(recognition.classifyFrame(registered)?.label, "Bimanual");
+  state.samples.push({ l: "Otra bimanual", components: required, h: descriptor, rh: descriptor });
+  assert.equal(recognition.classifyFrame(registered)?.reason, "ambiguous");
+  state.samples.pop();
   assert.equal(recognition.classifyFrame(holisticFrame({ right: hand(0.8) })), null);
 });
 
@@ -141,5 +144,9 @@ test("a facial expression difference can reject a registered facial sign", () =>
     syncStatus: "saved"
   });
   assert.equal(recognition.classifyFrame(registered)?.label, "Expresión registrada");
+  const descriptor = extractHolisticFeatures(registered, 4 / 3, required);
+  state.samples.push({ l: "Expresión similar", components: required, h: descriptor, rh: descriptor });
+  assert.equal(recognition.classifyFrame(registered)?.reason, "ambiguous");
+  state.samples.pop();
   assert.equal(recognition.classifyFrame(holisticFrame({ expression: 1 })), null);
 });
