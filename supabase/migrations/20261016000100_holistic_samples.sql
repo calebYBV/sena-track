@@ -17,8 +17,11 @@ set required_components = case
 end
 where format_version = 1;
 
-alter table public.sign_samples
-  add constraint sign_samples_required_components_check
+create temporary table _sign_samples_expected_constraints (
+  required_components jsonb,
+  payload jsonb,
+  format_version smallint,
+  constraint expected_required_components_check
   check (
     jsonb_typeof(required_components) = 'object' and
     required_components ? 'left' and
@@ -30,7 +33,53 @@ alter table public.sign_samples
     (required_components -> 'left' = 'true'::jsonb or
      required_components -> 'right' = 'true'::jsonb or
      required_components -> 'face' = 'true'::jsonb)
-  );
+  ),
+  constraint expected_payload_format_check
+  check (payload is null or (
+    jsonb_typeof(payload) = 'object' and
+    payload ? 'formatVersion' and
+    payload ->> 'formatVersion' = format_version::text
+  ))
+);
+
+do $$
+declare
+  expected_definition text;
+  existing_definition text;
+begin
+  select pg_get_constraintdef(oid, true)
+  into expected_definition
+  from pg_constraint
+  where conrelid = 'pg_temp._sign_samples_expected_constraints'::regclass
+    and conname = 'expected_required_components_check';
+
+  select pg_get_constraintdef(oid, true)
+  into existing_definition
+  from pg_constraint
+  where conrelid = 'public.sign_samples'::regclass
+    and conname = 'sign_samples_required_components_check';
+
+  if existing_definition is null then
+    alter table public.sign_samples
+      add constraint sign_samples_required_components_check
+      check (
+        jsonb_typeof(required_components) = 'object' and
+        required_components ? 'left' and
+        required_components ? 'right' and
+        required_components ? 'face' and
+        jsonb_typeof(required_components -> 'left') = 'boolean' and
+        jsonb_typeof(required_components -> 'right') = 'boolean' and
+        jsonb_typeof(required_components -> 'face') = 'boolean' and
+        (required_components -> 'left' = 'true'::jsonb or
+         required_components -> 'right' = 'true'::jsonb or
+         required_components -> 'face' = 'true'::jsonb)
+      );
+  elsif existing_definition <> expected_definition then
+    raise exception 'Existing sign_samples_required_components_check has an unexpected definition: %',
+      existing_definition;
+  end if;
+end;
+$$;
 
 alter table public.sign_samples
   drop constraint if exists sign_samples_hand_count_check;
@@ -43,13 +92,39 @@ alter table public.sign_samples
   drop constraint if exists sign_samples_check2,
   drop constraint if exists sign_samples_payload_check;
 
-alter table public.sign_samples
-  add constraint sign_samples_payload_format_check
-  check (payload is null or (
-    jsonb_typeof(payload) = 'object' and
-    payload ? 'formatVersion' and
-    payload ->> 'formatVersion' = format_version::text
-  ));
+do $$
+declare
+  expected_definition text;
+  existing_definition text;
+begin
+  select pg_get_constraintdef(oid, true)
+  into expected_definition
+  from pg_constraint
+  where conrelid = 'pg_temp._sign_samples_expected_constraints'::regclass
+    and conname = 'expected_payload_format_check';
+
+  select pg_get_constraintdef(oid, true)
+  into existing_definition
+  from pg_constraint
+  where conrelid = 'public.sign_samples'::regclass
+    and conname = 'sign_samples_payload_format_check';
+
+  if existing_definition is null then
+    alter table public.sign_samples
+      add constraint sign_samples_payload_format_check
+      check (payload is null or (
+        jsonb_typeof(payload) = 'object' and
+        payload ? 'formatVersion' and
+        payload ->> 'formatVersion' = format_version::text
+      ));
+  elsif existing_definition <> expected_definition then
+    raise exception 'Existing sign_samples_payload_format_check has an unexpected definition: %',
+      existing_definition;
+  end if;
+end;
+$$;
+
+drop table _sign_samples_expected_constraints;
 
 alter table public.user_settings
   drop column if exists use_basic_gestures;
