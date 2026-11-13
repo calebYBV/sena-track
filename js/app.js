@@ -6,15 +6,26 @@ import { createCamera } from "./camera.js";
 import { initAuth } from "./auth.js";
 import { DEFAULT_FILTER_CONFIG, normalizeFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
+import {
+  activateAppView,
+  mountEdoView,
+  resolveAppView
+} from "./navigation.js";
 
 // Estado compartido, sin variables globales en window.
 const state = {
   samples: [], motions: [], phrase: "", capState: null, motion: null,
-  readoutLock: 0, cand: null, candCount: 0, committed: null, noHand: 0,
+  readoutLock: 0, cand: null, candCount: 0, candSince: null,
+  committed: null, noHand: 0, noHandSince: null, neutralSince: null,
   ready: false, userId: null, filterConfig: { ...DEFAULT_FILTER_CONFIG },
-  ambiguityConfig: normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG)
+  ambiguityConfig: normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG),
+  recognitionEnabled: false,
+  recognitionTimers: new Set(),
+  lastRecognitionLabel: null,
+  lastRecognitionAt: 0
 };
 const $ = id => document.getElementById(id);
+mountEdoView(document);
 const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
 const statusEl = $("status"), signEl = $("sign"), metaEl = $("meta"), holdBar = $("holdBar");
 const phraseEl = $("phrase"), listEl = $("list"), trainBar = $("trainBar"), noteEl = $("note");
@@ -37,6 +48,33 @@ ui.refreshReferences();
 ui.refreshFilterControls();
 const training = createTraining({ state, dom, ui, storage, recognition });
 const camera = createCamera({ state, dom, ui, training, recognition });
+function initializeNavigation(){
+  const panels = [...document.querySelectorAll("[data-view-panel]")];
+  const links = [...document.querySelectorAll(".quick-links [data-view]")];
+  let currentView = null;
+  const navigate = (view, focus = false) => {
+    if (view === currentView) return;
+    const previousView = currentView;
+    currentView = view;
+    activateAppView(panels, links, view);
+    if (previousView === "translator" && view !== "translator"){
+      state.recognitionEnabled = false;
+      camera.stop();
+      training.refreshButtons();
+    } else if (previousView && view === "translator" && state.userId){
+      void camera.start();
+    }
+    if (focus){
+      document.querySelector(`[data-view-panel="${view}"] h1`)?.focus();
+    }
+  };
+  window.addEventListener("hashchange", () => {
+    navigate(resolveAppView(window.location.hash), true);
+  });
+  navigate(resolveAppView(window.location.hash));
+  return { current: () => currentView };
+}
+const navigation = initializeNavigation();
 state.onFilterChange = () => {
   ui.refreshFilterControls();
   camera.resetFilters();
@@ -59,7 +97,7 @@ initAuth({
     ui.refreshReferences();
     ui.refreshFilterControls();
     training.refreshButtons();
-    await camera.start();
+    if (navigation.current() === "translator") await camera.start();
   },
   onSignedOut: async () => {
     camera.stop();

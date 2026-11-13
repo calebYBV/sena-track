@@ -70,13 +70,14 @@
 
 <main id="app" style="display:none">
   <header class="app-header">
-    <a class="brand" href="#workspace" aria-label="Seña-Track, inicio">
+    <a class="brand" href="#translator" aria-label="Seña-Track, inicio">
       <img src="./assets/images/SE%C3%91A-TRACK%20%28LOGO%29.png" alt="">
       <span class="brand-name">Seña-Track</span>
     </a>
-    <nav class="quick-links" aria-label="Accesos rápidos">
-      <a href="#generalSettings">Ajustes</a>
-      <a href="#edoSettings">Ver EDO</a>
+    <nav class="quick-links" aria-label="Vistas principales">
+      <a href="#translator" data-view="translator" aria-controls="translatorView" aria-current="page">Traductor</a>
+      <a href="#settings" data-view="settings" aria-controls="settingsView">Ajustes</a>
+      <a href="#edo" data-view="edo" aria-controls="edoView">EDO</a>
     </nav>
     <div class="header-account">
       <p id="syncStatus" class="sync-status" role="status" aria-live="polite">Sincronización pendiente de configuración.</p>
@@ -85,14 +86,11 @@
     </div>
   </header>
 
-  <div class="workspace" id="workspace">
+  <div class="workspace app-view" id="translatorView" aria-labelledby="translatorHeading" data-view-panel="translator">
+    <h1 id="translatorHeading" class="view-heading" tabindex="-1">Traductor</h1>
     <aside class="workspace-left" aria-label="Enseñar y administrar señas">
       <section class="card white teach-card">
         <h2><span class="card-icon" aria-hidden="true">✦</span> Enseñar una seña</h2>
-        <div class="seg" role="radiogroup" aria-label="Tipo de seña">
-          <label><input type="radio" name="kind" value="static" checked><span>Fija</span></label>
-          <label><input type="radio" name="kind" value="motion"><span>Con movimiento</span></label>
-        </div>
         <label class="field-label" for="label">Nombre de la seña</label>
         <input type="text" class="field" id="label" maxlength="20" placeholder="Escribe un nombre">
         <fieldset class="component-options">
@@ -105,7 +103,7 @@
         <button id="btnTrain" class="btn blue train-button" type="button">Capturar seña</button>
         <div class="progress-heading"><span id="trainProgressLabel">Listo para capturar</span><span id="trainProgressCount"></span></div>
         <div class="progress" role="progressbar" aria-label="Progreso de captura" aria-valuemin="0" aria-valuemax="40" aria-valuenow="0"><i id="trainBar"></i></div>
-        <p class="hint" id="trainHint">Captura varios cuadros para guardar un ejemplo.</p>
+        <p class="hint" id="trainHint">El sistema analizará una secuencia y elegirá automáticamente la representación adecuada.</p>
       </section>
 
       <section class="card white library-card">
@@ -136,18 +134,14 @@
           <div class="status" id="status">Cargando modelo y cámara…</div>
         </div>
         <p class="hint component-status" id="componentStatus" aria-live="polite">Manos: esperando · Rostro: esperando</p>
-        <button id="btnMotion" class="btn lime motion-button" type="button" aria-pressed="false">Reconocer movimiento</button>
-        <p class="hint">Reconoce continuamente movimientos enseñados; no guarda capturas. Pulsa de nuevo para detener.</p>
+        <button id="btnMotion" class="btn lime motion-button" type="button" aria-pressed="false">Iniciar reconocimiento</button>
+        <p class="hint">Reconoce señas guardadas de postura, movimiento y rostro. Pulsa de nuevo para detener.</p>
         <p class="note" id="note" aria-live="polite"></p>
       </section>
 
       <section class="card white phrase-card" aria-labelledby="phraseTitle">
         <div class="phrase-heading">
           <h2 id="phraseTitle"><span class="card-icon" aria-hidden="true">♫</span> Frase y voz</h2>
-          <div class="speech-mode" role="radiogroup" aria-label="Modalidad de lectura">
-            <label><input type="radio" name="speechMode" value="automatic" checked><span>Automática</span></label>
-            <label><input type="radio" name="speechMode" value="manual"><span>Al presionar</span></label>
-          </div>
         </div>
         <div class="phrase-box" id="phrase" aria-live="polite"></div>
         <div class="phrase-actions">
@@ -157,10 +151,56 @@
           <button id="btnClear" class="btn line" type="button">Limpiar</button>
           <button id="btnSpace" class="btn line phrase-space" type="button" aria-label="Añadir espacio">Espacio</button>
         </div>
-        <label class="inline speech-permission"><input type="checkbox" id="speechEnabled" checked> <span>Permitir lectura en voz alta</span></label>
       </section>
     </section>
 
+  </div>
+
+  <section class="app-view edo-view" id="edoView" aria-labelledby="edoViewTitle" data-view-panel="edo" hidden>
+    <h1 id="edoViewTitle" class="view-heading" tabindex="-1">EDO</h1>
+    <div class="edo-content"></div>
+  </section>
+
+  <section class="settings-section app-view" id="settingsView" aria-labelledby="settingsViewTitle" data-view-panel="settings" hidden>
+    <h1 id="settingsViewTitle" class="view-heading" tabindex="-1">Ajustes</h1>
+    <section class="card white settings-card" id="generalSettings" aria-labelledby="generalSettingsTitle">
+      <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> Ajustes generales</h2>
+      <details class="advanced-settings">
+        <summary>Sensibilidad del reconocimiento (avanzado)</summary>
+        <p>Ambas rutas se evalúan automáticamente; estos umbrales solo ajustan la tolerancia de sus clasificadores.</p>
+        <div class="ctl">
+          <div class="top"><label for="tol">Tolerancia de postura</label><span id="tolVal"></span></div>
+          <input type="range" id="tol" min="0.3" max="1.5" step="0.05" value="0.8">
+        </div>
+        <div class="ctl">
+          <div class="top"><label for="tolM">Tolerancia de trayectoria</label><span id="tolMVal"></span></div>
+          <input type="range" id="tolM" min="0.2" max="2" step="0.05" value="0.7">
+        </div>
+      </details>
+      <div class="ctl">
+        <div class="top"><label for="dur">Duración de captura y ventana dinámica</label><span id="durVal"></span></div>
+        <input type="range" id="dur" min="1" max="3.5" step="0.5" value="2">
+      </div>
+      <fieldset class="voice-preferences">
+        <legend>Lectura de voz</legend>
+        <div class="speech-mode" role="radiogroup" aria-label="Modalidad de lectura">
+          <label><input type="radio" name="speechMode" value="automatic" checked><span>Automática</span></label>
+          <label><input type="radio" name="speechMode" value="manual"><span>Al presionar Leer</span></label>
+        </div>
+        <label class="inline speech-permission"><input type="checkbox" id="speechEnabled" checked> <span>Permitir lectura en voz alta</span></label>
+      </fieldset>
+      <div class="settings-actions">
+        <button id="btnImportLocal" class="btn line" type="button">Importar señas locales…</button>
+        <button id="btnExport" class="btn line" type="button">Exportar señas</button>
+        <button id="btnImport" class="btn line" type="button">Importar JSON</button>
+        <button id="btnReset" class="btn line" type="button">Borrar todas</button>
+      </div>
+      <input type="file" id="file" accept="application/json" hidden>
+    </section>
+
+  </section>
+
+  <template id="edoContents">
     <aside class="workspace-right" aria-label="Comparación y seguimiento EDO">
       <section class="card white evaluation" id="evaluationPanel" aria-labelledby="evaluationTitle">
         <div class="evaluation-heading">
@@ -203,33 +243,6 @@
       </section>
       <p class="hint face-status" id="faceStatus" aria-live="polite"></p>
     </aside>
-  </div>
-
-  <section class="settings-section" aria-label="Configuración">
-    <section class="card white settings-card" id="generalSettings" aria-labelledby="generalSettingsTitle">
-      <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> Ajustes generales</h2>
-      <div class="ctl">
-        <div class="top"><label for="tol">Tolerancia de señas fijas</label><span id="tolVal"></span></div>
-        <input type="range" id="tol" min="0.3" max="1.5" step="0.05" value="0.8">
-      </div>
-      <div class="ctl">
-        <div class="top"><label for="tolM">Tolerancia de movimiento</label><span id="tolMVal"></span></div>
-        <input type="range" id="tolM" min="0.2" max="2" step="0.05" value="0.7">
-      </div>
-      <div class="ctl">
-        <div class="top"><label for="dur">Duración de captura y reconocimiento</label><span id="durVal"></span></div>
-        <input type="range" id="dur" min="1" max="3.5" step="0.5" value="2">
-      </div>
-      <p class="hint">Más tolerancia facilita la coincidencia, pero puede aumentar errores.</p>
-      <div class="settings-actions">
-        <button id="btnImportLocal" class="btn line" type="button">Importar señas locales…</button>
-        <button id="btnExport" class="btn line" type="button">Exportar señas</button>
-        <button id="btnImport" class="btn line" type="button">Importar JSON</button>
-        <button id="btnReset" class="btn line" type="button">Borrar todas</button>
-      </div>
-      <input type="file" id="file" accept="application/json" hidden>
-    </section>
-
     <section class="card white edo-settings" id="edoSettings" aria-labelledby="edoSettingsTitle">
       <h2 id="edoSettingsTitle"><span class="card-icon" aria-hidden="true">∿</span> EDO utilizada y configuración</h2>
       <p class="active-model settings-model"><span>Modelo actualmente seleccionado</span><strong id="settingsModelName">Filtro de primer orden</strong></p>
@@ -313,7 +326,13 @@
         <div id="offCalculation" class="calculation-copy" hidden><p>No se aplica una ecuación de filtro adicional; se devuelven las coordenadas de entrada.</p></div>
       </details>
     </section>
-  </section>
+    <section class="card white experimental-evaluation" aria-labelledby="experimentalEvaluationTitle">
+      <h2 id="experimentalEvaluationTitle"><span class="card-icon" aria-hidden="true">⌁</span> Evaluación experimental independiente</h2>
+      <p>Esta vista compara ramas con una seña de referencia durante la misma ejecución; no mide exactitud ni demuestra una mejora general. Para evaluar reconocimiento, usa el CLI offline con conjuntos independientes de entrenamiento, validación y prueba:</p>
+      <code>npm run evaluate -- entrenamiento.json validacion.json prueba.json --session-split</code>
+      <p>El evaluador informa métricas por tipo de seña y no modifica Supabase. Las capturas sintéticas de las pruebas no representan precisión real.</p>
+    </section>
+  </template>
 </main>
 
 

@@ -97,16 +97,23 @@ function releaseMedia(){
 }
 
 function stop(){
+  const interruptedCapture = !!state.capState || state.motion?.purpose === "train";
   startToken++;
   started = false;
   state.ready = false;
+  state.recognitionEnabled = false;
   state.motion = null;
   state.capState = null;
   state.cand = null;
   state.candCount = 0;
+  state.candSince = null;
   state.committed = null;
   state.noHand = 0;
+  state.noHandSince = null;
+  state.neutralSince = null;
   state.readoutLock = 0;
+  for (const timer of state.recognitionTimers){ clearTimeout(timer); }
+  state.recognitionTimers.clear();
   missingFrames = 0;
   lastTime = -1;
   lastFrameError = null;
@@ -115,7 +122,11 @@ function stop(){
   releaseMedia();
   resetTrackingDiagnostics();
   setEvaluationEnabled(true);
+  if (interruptedCapture) setNote("Captura cancelada al salir del Traductor; no se guardó.");
   refreshButtons();
+  statusEl.className = "status";
+  statusEl.textContent = "Cámara inactiva. Vuelve al Traductor para iniciarla.";
+  statusEl.classList.remove("hidden");
   $("cameraIndicator").classList.remove("is-active", "has-error");
   $("cameraIndicatorText").textContent = "Cámara inactiva";
 }
@@ -267,40 +278,48 @@ function processFrame(){
           handCount: results.landmarks.length,
           faceAvailable: presence.face
         });
-      } else if (!isCapturing && selected){
-        updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
-        const predictions = compareStatic({
-          ...selected, rawFrame, filteredFrame
-        });
-        const mainPrediction = state.filterConfig.model === "off"
-          ? predictions.rawPrediction : predictions.filteredPrediction;
-        if (!mainPrediction?.label && requiredMissing){
-          $("sign").textContent = "Mano o rostro requerido fuera de cámara";
-          $("sign").className = "sign idle";
-          $("meta").textContent = "";
-          state.cand = null; state.candCount = 0; state.committed = null;
-          holdBar.style.width = "0";
-          updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
-          edo.retain(activeIdentities);
-          lastTime = video.currentTime;
-          return;
-        }
-        show(mainPrediction); stability(mainPrediction);
-      } else if (!isCapturing){
-        const predictions = compareStatic({ rawFrame, filteredFrame });
-        const mainPrediction = state.filterConfig.model === "off"
-          ? predictions.rawPrediction : predictions.filteredPrediction;
-        if (!mainPrediction?.label && requiredMissing){
-          $("sign").textContent = "Mano o rostro requerido fuera de cámara";
-          $("sign").className = "sign idle";
-          $("meta").textContent = "";
-          state.cand = null; state.candCount = 0; state.committed = null;
-          holdBar.style.width = "0";
-          updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+      } else if (!isCapturing && state.recognitionEnabled){
+        if (selected){
+          updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
+          const predictions = compareStatic({
+            ...selected, rawFrame, filteredFrame
+          });
+          const mainPrediction = state.filterConfig.model === "off"
+            ? predictions.rawPrediction : predictions.filteredPrediction;
+          if (!mainPrediction?.label && requiredMissing){
+            $("sign").textContent = "Mano o rostro requerido fuera de cámara";
+            $("sign").className = "sign idle";
+            $("meta").textContent = "";
+            state.cand = null; state.candCount = 0; state.committed = null;
+            holdBar.style.width = "0";
+            updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+            edo.retain(activeIdentities);
+            lastTime = video.currentTime;
+            return;
+          }
+          show(mainPrediction); stability(mainPrediction);
         } else {
-          show(mainPrediction);
-          stability(mainPrediction);
+          const predictions = compareStatic({ rawFrame, filteredFrame });
+          const mainPrediction = state.filterConfig.model === "off"
+            ? predictions.rawPrediction : predictions.filteredPrediction;
+          if (!mainPrediction?.label && requiredMissing){
+            $("sign").textContent = "Mano o rostro requerido fuera de cámara";
+            $("sign").className = "sign idle";
+            $("meta").textContent = "";
+            state.cand = null; state.candCount = 0; state.committed = null;
+            holdBar.style.width = "0";
+            updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+          } else {
+            show(mainPrediction);
+            stability(mainPrediction);
+          }
         }
+      } else if (!isCapturing){
+        $("sign").textContent = "Reconocimiento detenido";
+        $("sign").className = "sign idle";
+        $("meta").textContent = "Inicia reconocimiento para detectar señas.";
+        state.cand = null; state.candCount = 0; state.committed = null;
+        holdBar.style.width = "0";
       }
     } else {
       if (missingFrames === 0){
@@ -378,6 +397,9 @@ function fail(msg){
 async function start(){
   if (started) return;
   started = true;
+  statusEl.className = "status";
+  statusEl.textContent = "Cargando modelo y cámara…";
+  statusEl.classList.remove("hidden");
   $("cameraIndicator").classList.remove("has-error");
   $("cameraIndicator").classList.remove("is-active");
   $("cameraIndicatorText").textContent = "Iniciando cámara";

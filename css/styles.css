@@ -314,7 +314,8 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .brand-name{color:var(--grass);font-family:"Baloo 2",var(--display);font-size:1.7rem;font-weight:800;line-height:1;letter-spacing:.01em}
 .quick-links{display:flex;align-items:center;justify-content:center;gap:8px}
 .quick-links a{padding:7px 14px;border-radius:999px;color:var(--sea);font-weight:700;text-decoration:none}
-.quick-links a:hover{background:var(--mist)}
+.quick-links a:hover,.quick-links a[aria-current="page"]{background:var(--mist)}
+.quick-links a[aria-current="page"]{box-shadow:inset 0 -2px 0 var(--grass)}
 .header-account{display:flex;align-items:center;justify-content:flex-end;gap:8px;min-width:0}
 .header-account .sync-status{margin:0;padding:5px 10px;font-size:.78rem;white-space:nowrap;max-width:230px;overflow:hidden;text-overflow:ellipsis}
 .header-account .sync-retry{margin:0;padding:5px 10px;font-size:.75rem;letter-spacing:0;text-transform:none}
@@ -323,12 +324,17 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 #app #logoutBtn.hidden{display:none}
 .workspace{
   display:grid;
-  grid-template-columns:minmax(250px,.94fr) minmax(420px,1.47fr) minmax(315px,1.08fr);
+  grid-template-columns:minmax(250px,.72fr) minmax(420px,1.55fr);
   gap:12px;
   align-items:start;
   min-width:0;
 }
 .workspace-left,.workspace-center,.workspace-right{display:flex;flex-direction:column;gap:10px;min-width:0}
+.view-heading{grid-column:1/-1;margin:0 0 2px;color:var(--ink);font-size:clamp(1.35rem,2.4vw,1.8rem)}
+.edo-view,.settings-section{min-width:0}
+.edo-content{display:grid;grid-template-columns:minmax(0,.82fr) minmax(0,1.18fr);gap:12px;align-items:start}
+.edo-content .workspace-right{grid-column:auto;grid-row:auto}
+.edo-content .edo-settings{grid-column:auto}
 .workspace .card{margin:0;padding:14px 15px;border-radius:18px}
 .workspace h2,.settings-section h2{display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--sea);font-family:var(--display);font-size:1.1rem;line-height:1.2}
 .card-icon{display:inline-grid;place-items:center;flex:none;width:25px;height:25px;color:var(--sea);font-size:1.2rem;line-height:1}
@@ -441,10 +447,17 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .tracking-metric-grid small{color:var(--muted);font-size:.65rem;line-height:1.2}
 .tracking-metrics .hint{margin:6px 0 0;font-size:.7rem;line-height:1.3}
 .face-status:empty{display:none}
-.settings-section{display:grid;grid-template-columns:minmax(280px,.85fr) minmax(0,1.4fr);gap:12px;min-width:0;margin-top:0}
+.settings-section{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0;margin-top:0}
 .settings-section .card{margin:0;padding:20px;border-radius:20px}
 .settings-card,.edo-settings{background:#fff!important;color:var(--ink)!important;box-shadow:0 7px 22px rgba(12,113,198,.1)}
 .settings-section h2{font-size:1.25rem;margin-bottom:14px}
+.advanced-settings{margin:12px 0;padding:10px 12px;border:1px solid #d6edf8;border-radius:12px;background:#fff}
+.advanced-settings summary{color:var(--sea);font-weight:700;cursor:pointer}
+.advanced-settings>p{margin:7px 0;color:var(--muted);font-size:.8rem}
+.voice-preferences{display:grid;gap:8px;margin:12px 0;padding:10px 12px;border:1px solid #d6edf8;border-radius:12px}
+.voice-preferences legend{padding:0 5px;color:var(--ink);font-weight:700}
+.voice-preferences .speech-mode{justify-self:start}
+.voice-preferences .speech-permission{margin:0!important}
 .ctl{margin:12px 0}
 .ctl .top{font-size:.87rem;font-weight:700}
 .ctl .top span{color:var(--sea);font-variant-numeric:tabular-nums}
@@ -471,6 +484,9 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .evaluation-controls select{width:100%;min-width:0;padding:7px 9px;border:1px solid #cfe5f2;border-radius:10px;background:#fff;color:var(--ink);font:inherit}
 .evaluation-controls input[type=range]{width:100%;accent-color:var(--sea)}
 .evaluation-controls output{color:var(--sea);font-weight:700}
+.experimental-evaluation{grid-column:1/-1}
+.experimental-evaluation p{margin:6px 0;font-size:.86rem;line-height:1.45}
+.experimental-evaluation code{display:block;max-width:100%;overflow-wrap:anywhere;padding:9px 11px;border-radius:10px;background:#f0f9ff;color:var(--sea);font-size:.82rem}
 .control-value{margin-left:auto;font-variant-numeric:tabular-nums}
 .control-description{grid-column:1/-1;margin:-6px 0 0;color:var(--muted);font-size:.8rem;line-height:1.35}
 .evaluation-controls .evaluation-visual{grid-column:1/-1;flex-direction:row;align-items:center;margin:0}
@@ -483,13 +499,16 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 
 @media(max-width:1120px){
   .workspace{grid-template-columns:minmax(250px,.9fr) minmax(320px,1.1fr)}
-  .workspace-center{grid-column:1/-1;grid-row:1}
+  .workspace>.view-heading{grid-column:1/-1;grid-row:1}
+  .workspace-center{grid-column:1/-1;grid-row:2}
   .workspace-right{grid-column:2;grid-row:2}
-  .workspace-left{grid-column:1;grid-row:2}
+  .workspace-left{grid-column:1;grid-row:3}
   .workspace-center{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(270px,.85fr);align-items:start;gap:10px}
   .workspace-center .camera-section{grid-row:span 2}
   .workspace-center .phrase-card{height:fit-content}
-  .settings-section{grid-template-columns:1fr 1.2fr}
+  .settings-section{grid-template-columns:minmax(0,1fr)}
+  .edo-content{grid-template-columns:minmax(0,1fr)}
+  .edo-content .workspace-right{grid-column:auto;grid-row:auto}
   .header-account .sync-status{max-width:180px}
 }
 @media(max-width:760px){
@@ -504,9 +523,9 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
   .header-account .sync-retry{display:inline-flex}
   #app #logoutBtn{padding:6px 9px;font-size:.78rem}
   .workspace{grid-template-columns:minmax(0,1fr);gap:10px}
-  .workspace-center{grid-column:1;grid-row:1;display:flex}
+  .workspace>.view-heading{grid-column:1;grid-row:1}
+  .workspace-center{grid-column:1;grid-row:2;display:flex}
   .workspace-center .camera-section{grid-row:auto}
-  .workspace-right{grid-column:1;grid-row:2}
   .workspace-left{grid-column:1;grid-row:3}
   .workspace .card{padding:13px}
   .workspace-center .stage{aspect-ratio:4/3}
