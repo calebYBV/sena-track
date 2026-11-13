@@ -344,6 +344,42 @@ test("filtered references are regenerated from raw captures when the EDO config 
   assert.deepEqual(reference.h, originalStoredFeatures);
 });
 
+test("a failed v2 reference replay cannot silently use stale filtered features", () => {
+  const components = { left: true, right: false, face: false };
+  const hand = Array.from({ length: 21 }, (_, index) => ({
+    x: 0.4 + index * 0.002,
+    y: 0.3 + index * 0.003,
+    z: index * 0.001
+  }));
+  const descriptor = extractHolisticFeatures({ hands: { Left: hand } }, 4 / 3, components);
+  const sample = {
+    l: "Seña guardada",
+    kind: "static",
+    source: "paired-raw-and-filtered-v2",
+    components,
+    rawFrames: Array.from({ length: 8 }, (_, index) => ({
+      time: index * 33,
+      hands: {}
+    })),
+    h: descriptor,
+    rh: descriptor
+  };
+  const recognition = makeRecognition({
+    samples: [sample],
+    motions: [],
+    filterConfig: { ...DEFAULT_FILTER_CONFIG }
+  });
+
+  recognition.prepareFilteredReferences(DEFAULT_FILTER_CONFIG);
+
+  assert.equal(recognition.hasFilterReferenceMismatch(sample), true);
+  assert.equal(recognition.classifyStaticDescriptor(descriptor, components, "filtered"), null);
+  assert.equal(
+    recognition.classifyStaticDescriptor(descriptor, components, "raw")?.label,
+    "Seña guardada"
+  );
+});
+
 test("legacy references remain unchanged and expose unavailable EDO regeneration", () => {
   const state = { samples: [], motions: [], filterConfig: { ...DEFAULT_FILTER_CONFIG } };
   const recognition = makeRecognition(state);
@@ -357,6 +393,20 @@ test("legacy references remain unchanged and expose unavailable EDO regeneration
   recognition.prepareFilteredReferences(state.filterConfig);
   assert.equal(recognition.hasFilterReferenceMismatch(legacy), true);
   assert.deepEqual(legacy.h.hands.Left, zero(63));
+});
+
+test("legacy feature-only signs stay available in Solo MediaPipe with an explicit mismatch flag", () => {
+  const legacy = { l: "Legada", f: zero(63) };
+  const recognition = makeRecognition({
+    samples: [legacy],
+    motions: [],
+    filterConfig: { ...DEFAULT_FILTER_CONFIG }
+  });
+
+  recognition.prepareFilteredReferences(DEFAULT_FILTER_CONFIG);
+
+  assert.equal(recognition.classify(zero(63), "raw")?.label, "Legada");
+  assert.equal(recognition.hasFilterReferenceMismatch(legacy), true);
 });
 
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {
