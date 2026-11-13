@@ -1,14 +1,13 @@
 import {
   calculateDistanceReduction,
   DEFAULT_AMBIGUITY_CONFIG,
-  normalizeAmbiguityConfig,
-  STATIC_CONFIRMATION_FRAMES
+  normalizeAmbiguityConfig
 } from "./recognition.js";
+import { shouldAutoAppendPhrase } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
-const HOLD = STATIC_CONFIRMATION_FRAMES, CAPTURE_FRAMES = 40;
 let lastComparison = null;
 function setNote(t){ noteEl.textContent = t; }
 function setSyncStatus(text, status = "saved"){
@@ -18,10 +17,12 @@ function setSyncStatus(text, status = "saved"){
   $("syncRetry").hidden = status !== "error" && status !== "pending";
 }
 
-function stability(r){
+function stability(r, timestamp = performance.now()){
+  if (!state.recognitionEnabled) return;
   state.noHand = 0;
+  state.noHandSince = null;
   if (r?.reason === "ambiguous"){
-    state.cand = null; state.candCount = 0; state.committed = null;
+    state.cand = null; state.candCount = 0; state.candSince = null;
     holdBar.style.width = "0";
     signEl.textContent = "Reconocimiento ambiguo";
     signEl.className = "sign idle";
@@ -30,26 +31,54 @@ function stability(r){
     return;
   }
   const label = r ? r.label : null;
-  if (label !== state.cand){ state.cand = label; state.candCount = 0; }
+  if (!label){
+    state.cand = null; state.candCount = 0; state.candSince = null;
+    if (state.neutralSince === null || state.neutralSince === undefined){
+      state.neutralSince = timestamp;
+    }
+    if (timestamp - state.neutralSince >= 500) state.committed = null;
+    holdBar.style.width = "0";
+    return;
+  }
+  state.neutralSince = null;
+  if (label !== state.cand){
+    state.cand = label;
+    state.candCount = 0;
+    state.candSince = timestamp;
+  }
   state.candCount++;
-  holdBar.style.width = label ? Math.min(100, state.candCount / HOLD * 100) + "%" : "0";
-  if (label && state.candCount === HOLD && label !== state.committed){
+  const confirmedForMs = timestamp - state.candSince;
+  holdBar.style.width = Math.min(100, confirmedForMs / 450 * 100) + "%";
+  if (confirmedForMs >= 450 && label !== state.committed){
     state.committed = label;
     addToPhrase(label);
   }
 }
-function lostHand(){
-  if (++state.noHand > 8){ state.committed = null; state.cand = null; state.candCount = 0; return true; }
+function lostHand(timestamp = performance.now()){
+  if (state.noHandSince === null || state.noHandSince === undefined){
+    state.noHandSince = timestamp;
+  }
+  state.noHand++;
+  state.cand = null;
+  state.candCount = 0;
+  state.candSince = null;
+  if (timestamp - state.noHandSince >= 500){
+    state.committed = null;
+    state.neutralSince = timestamp;
+    return true;
+  }
   holdBar.style.width = "0";
   return false;
 }
 function addToPhrase(label){
-  if (label.length === 1) state.phrase += label;
-  else state.phrase += (state.phrase && !state.phrase.endsWith(" ") ? " " : "") + label + " ";
+  if (!shouldAutoAppendPhrase(state, label, performance.now())) return;
+  const normalized = String(label).trim();
+  if (normalized.length === 1) state.phrase += normalized;
+  else state.phrase += (state.phrase && !state.phrase.endsWith(" ") ? " " : "") + normalized + " ";
   phraseEl.textContent = state.phrase;
   if ($("speechEnabled").checked &&
       document.querySelector('input[name="speechMode"]:checked')?.value === "automatic"){
-    speakText(label);
+    speakText(normalized);
   }
 }
 
@@ -65,42 +94,42 @@ function speakText(text){
 }
 
 function renderList(){
-  const groups = {};
-  state.samples.forEach(s => { const k = "s|" + s.l; (groups[k] ||= { l: s.l, t: "s", n: 0 }).n++; });
-  state.motions.forEach(m => { const k = "m|" + m.l; (groups[k] ||= { l: m.l, t: "m", n: 0 }).n++; });
+  const groups = new Map();
+  for (const example of [...state.samples, ...state.motions]){
+    if (!groups.has(example.l)) groups.set(example.l, []);
+    groups.get(example.l).push(example);
+  }
   listEl.innerHTML = "";
-  const items = Object.values(groups);
-  if (!items.length){
+  if (!groups.size){
     listEl.innerHTML = '<li class="empty" style="background:none;padding:0">Tu biblioteca está vacía. Registra tu primera seña</li>';
     refreshReferences();
     return;
   }
-  items.forEach(g => {
+  for (const [label, examples] of groups){
     const li = document.createElement("li");
     const info = document.createElement("div");
     info.className = "sign-info";
     const icon = document.createElement("span");
-    icon.className = `sign-thumbnail ${g.t === "m" ? "motion" : ""}`;
+    icon.className = "sign-thumbnail";
     icon.setAttribute("aria-hidden", "true");
-    icon.textContent = g.t === "m" ? "↔" : "◇";
-    const name = document.createElement("span"); name.className = "name"; name.textContent = g.l;
-    const examples = g.t === "s" ? state.samples : state.motions;
-    const hasLegacy = examples.some(example => example.l === g.l && !example.components);
-    const tag = document.createElement("span"); tag.className = "tag " + g.t + (hasLegacy ? " legacy" : "");
-    const hasPending = examples.some(example => example.l === g.l && example.syncStatus === "pending");
-    tag.textContent = (g.t === "s" ? "Fija" : "Movimiento") +
-      (hasLegacy ? " · antigua, solo manos" : "") + (hasPending ? " · pendiente" : "");
+    icon.textContent = "◇";
+    const name = document.createElement("span"); name.className = "name"; name.textContent = label;
+    const hasLegacy = examples.some(example => !example.components);
+    const tag = document.createElement("span");
+    tag.className = "tag" + (hasLegacy ? " legacy" : "");
+    const hasPending = examples.some(example => example.syncStatus === "pending");
+    tag.textContent = [
+      hasLegacy ? "incluye señas anteriores" : "",
+      hasPending ? "pendiente de sincronización" : ""
+    ].filter(Boolean).join(" · ");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
-    const captureCount = countCapturesForLabel(examples, g.l);
-    cnt.textContent = g.t === "s"
-      ? `${captureCount} capturas`
-      : `${captureCount} grabaciones`;
+    cnt.textContent = `${countCapturesForLabel(examples, label)} capturas`;
     const b = document.createElement("button");
     b.className = "btn line";
     b.textContent = "Borrar";
-    b.setAttribute("aria-label", `Borrar seña ${g.l}`);
+    b.setAttribute("aria-label", `Borrar seña ${label}`);
     b.onclick = () => {
-      void deleteSign(g.l, g.t).catch(error => {
+      void deleteSign(label, "all").catch(error => {
         console.error("No se pudo eliminar la seña.", error);
         setSyncStatus(`No se pudo preparar la eliminación: ${error.message}`, "error");
       });
@@ -108,7 +137,7 @@ function renderList(){
     li.className = "sign-item";
     info.append(name, tag, cnt);
     li.append(icon, info, b); listEl.appendChild(li);
-  });
+  }
   refreshReferences();
 }
 
@@ -367,13 +396,20 @@ function clearForUser(){
   $("trainProgressLabel").textContent = "Listo para capturar";
   $("trainProgressCount").textContent = "";
   $("trainBar").style.width = "0";
-  $("trainBar").parentElement.setAttribute("aria-valuemax", "40");
+  $("trainBar").parentElement.setAttribute("aria-valuemax",
+    String(Number($("dur").value) * 1000));
   $("trainBar").parentElement.setAttribute("aria-valuenow", "0");
-  $("trainHint").textContent = "Captura varios cuadros para guardar un ejemplo.";
+  $("trainHint").textContent = "El sistema analizará una secuencia y elegirá automáticamente la representación adecuada.";
   state.cand = null;
   state.candCount = 0;
+  state.candSince = null;
   state.committed = null;
   state.noHand = 0;
+  state.noHandSince = null;
+  state.neutralSince = null;
+  state.recognitionEnabled = false;
+  state.lastRecognitionLabel = null;
+  state.lastRecognitionAt = 0;
   signEl.textContent = "Sin mano";
   signEl.className = "sign idle";
   metaEl.textContent = "";

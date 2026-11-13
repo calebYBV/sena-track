@@ -1,11 +1,12 @@
 # SEÑA-TRACK
 
-Aplicación web para registrar señas estáticas y con movimiento, reconocerlas con la cámara y construir una frase con salida de voz.
+Aplicación web para enseñar y reconocer señas con la cámara, construir frases y comparar filtros de seguimiento.
 
 ## Funciones
 
 - Detección sincronizada de ambas manos y rostro con MediaPipe Tasks Vision 0.10.14. Los coeficientes faciales, las relaciones geométricas y la orientación de la cabeza intervienen en el reconocimiento, sin inferir emociones ni identidad personal.
-- Registro de señas fijas y con movimiento, seleccionando explícitamente mano izquierda, derecha, ambas y/o rostro. Se reconocen únicamente ejemplos guardados en la biblioteca privada de Supabase.
+- Un único formulario **Enseñar una seña** y botón **Capturar seña**. El usuario elige las manos y/o el rostro requeridos, pero no el tipo de seña: el sistema analiza la secuencia temporal para guardar automáticamente una postura o un movimiento completo.
+- Biblioteca visual unificada por nombre, con conteo de capturas; las categorías internas estática/dinámica se conservan para reconocimiento y compatibilidad con ejemplos anteriores.
 - Filtros manuales de primer orden y segundo orden amortiguado para landmarks, con comparación en vivo frente a la salida directa de MediaPipe y ecuaciones MathML explicadas en la interfaz.
 - Controles de tolerancia y duración, frase acumulada y lectura automática o manual, controles de espacio, borrar y limpiar. No hay gestos preprogramados ni señas de demostración.
 - Importación explícita y exportación de señas en JSON; las bibliotecas antiguas de `localStorage` no se cargan automáticamente.
@@ -15,7 +16,7 @@ Aplicación web para registrar señas estáticas y con movimiento, reconocerlas 
 
 La comparación muestra distancias a ejemplos guardados y la reducción relativa de distancia para una misma etiqueta. No es una exactitud validada ni una probabilidad de acierto. En uso libre, la referencia es la candidata de la rama principal; se puede seleccionar una seña explícita para una evaluación controlada. Una biblioteca vacía no produce palabras ni voz.
 
-La primera vista distribuye enseñanza y biblioteca a la izquierda, cámara y voz al centro, y comparación EDO con métricas de estabilidad a la derecha. La zona inferior contiene los ajustes generales y la explicación completa de la EDO con los parámetros activos y el cálculo numérico desplegable. Durante el registro de ejemplos, la comparación se desactiva y se aclara que no es una evaluación independiente.
+La interfaz tiene tres vistas SPA: **Traductor** reúne enseñanza, biblioteca, cámara y frase; **Ajustes** contiene sensibilidad, duración, voz e importación/exportación; **EDO** reúne la comparación en vivo, métricas de estabilidad, ecuaciones, parámetros e información sobre evaluación experimental independiente. Se puede navegar con los enlaces superiores y el historial del navegador. La cámara y el reconocimiento se detienen al salir del Traductor; una captura en curso se cancela sin guardarse. Durante una captura, el sistema conserva cuadros raw/filtrados sincronizados, landmarks y datos faciales requeridos, y solo guarda el ejemplo si detecta una postura estable o una trayectoria completa con final estable. La detección usa umbrales heurísticos provisionales y todavía necesita validación con capturas representativas; las pruebas sintéticas no establecen precisión real.
 
 El filtro de primer orden integra `dy/dt = (u - y) / tau` con Euler explícito y subpasos `h <= tau/4`. El de segundo orden integra `a = omegaN²*(u-y) - 2*zeta*omegaN*v` mediante Euler semiimplícito, actualizando primero `v` y luego `y`, con `h <= min(0.1/omegaN, 0.1/(2*zeta*omegaN))`. Ambos usan el tiempo monotónico real entre cuadros, conservan estado independiente por mano, rostro, punto y eje, se inicializan desde la primera medición válida y reinician tras una pérdida o pausa superior a 500 ms. El filtro no altera el video. La rama sin filtro sigue siendo la salida de MediaPipe y puede incluir su propio procesamiento interno. Cada captura conserva sus coordenadas sincronizadas, parámetros y metadatos del método/versionado del filtro.
 
@@ -27,9 +28,9 @@ La clasificación compara las dos clases distintas más cercanas. Si su diferenc
 
 El contador de **Mis señas** cuenta registros de captura únicos por seña, deduplicados por su identificador de captura o de sincronización; no usa la fecha como identificador, porque distintas capturas pueden compartirla. En muestras heredadas sin esos identificadores, cuenta cada registro como un ejemplo. No infiere capturas a partir de la cantidad de cuadros de una muestra.
 
-El botón **Reconocer movimiento** inicia el reconocimiento continuo de las señas de movimiento ya sincronizadas; no crea ni guarda capturas de entrenamiento. Vuelve a pulsarlo para detener el reconocimiento. Para añadir ejemplos a la biblioteca, escribe el nombre, selecciona **Con movimiento** y utiliza **Grabar movimiento**.
+El botón **Iniciar reconocimiento** activa el reconocimiento global de señas guardadas estáticas, dinámicas y faciales; vuelve a pulsarlo para detenerlo. Para enseñar una seña, escribe su nombre, elige los componentes requeridos y pulsa **Capturar seña**. Mantén una postura o realiza el movimiento completo; no hay que indicar el tipo.
 
-Los ejemplos nuevos guardan coordenadas originales, componentes requeridos, lateralidad, presencia, tiempos relativos, características faciales y manuales utilizadas, y metadatos del filtro EDO. Las secuencias de movimiento incluyen también la trayectoria de cada muñeca relativa al inicio de la grabación y normalizada por el tamaño de la mano, para distinguir desplazamientos aunque la forma de la mano no cambie. La comparación holística pondera explícitamente forma manual, posición relativa y rostro; el rostro pesa 0,5 cuando se combina con manos, su vector tiene escala 2,5 y el peso de la forma manual y la posición se reparte en 0,35/0,15. Estas ponderaciones son parámetros de comparación, no probabilidades. Los ejemplos antiguos permanecen compatibles como muestras de manos sin información facial inventada y se pueden volver a capturar con otros componentes.
+Las capturas nuevas guardan coordenadas originales, componentes requeridos, lateralidad, presencia, marcas de tiempo, características faciales y manuales, y metadatos del filtro EDO en el formato v2 existente. Las secuencias dinámicas incluyen trayectorias de muñecas y cabeza relativas al inicio y normalizadas por la escala correspondiente, además de expresiones faciales cuando se requieren. La clasificación interna mantiene las representaciones estática y dinámica existentes; la biblioteca las agrupa visualmente sin convertir ni sobrescribir datos. Las capturas antiguas de ambos tipos siguen siendo importables y reconocibles, y no se modifican muestras remotas al cambiar este flujo. La comparación holística pondera explícitamente forma manual, posición relativa y rostro; el rostro pesa 0,5 cuando se combina con manos, su vector tiene escala 2,5 y el peso de la forma manual y la posición se reparte en 0,35/0,15. Estas ponderaciones son parámetros de comparación, no probabilidades.
 
 ## Estructura
 
@@ -45,7 +46,9 @@ js/
   camera.js       # Permisos, modelos, detección, dibujo y ciclo de cámara
   holistic.js     # Características faciales, normalización y ponderaciones
   recognition.js  # Comparación de componentes guardados y DTW sincronizado
-  training.js     # Captura estática y registro de movimientos
+  training.js     # Captura unificada y análisis temporal
+  unifiedCapture.js # Clasificación automática de postura/movimiento
+  navigation.js   # Enrutamiento SPA de Traductor, Ajustes y EDO
   sampleCount.js  # Conteo único de capturas guardadas
   storage.js      # Persistencia, migración, importación y exportación
   ui.js           # Eventos y actualización de interfaz
@@ -95,8 +98,8 @@ Protocolo recomendado: (1) asigna cada grabación a un único split antes de ana
 
 1. Abre la aplicación en `http://localhost:8000` o en un sitio HTTPS y permite el acceso a la cámara.
 2. Comprueba que desaparezca el mensaje de carga y que se dibujen los puntos al mostrar una mano.
-3. En **Enseñar una seña**, selecciona las manos y/o el rostro que requiere la seña. Registra ejemplos fijos y con movimiento y comprueba que los ejemplos sincronizados aparezcan en **Mis señas** y se reconozcan.
-4. Prueba los controles de frase, los ajustes, la importación/exportación y la lectura por voz.
+3. En **Enseñar una seña**, escribe el nombre, selecciona las manos y/o el rostro requeridos y pulsa **Capturar seña**. Mantén una postura o realiza el movimiento completo y comprueba que se guarde con el tipo detectado automáticamente.
+4. Comprueba la biblioteca unificada, inicia/detén el reconocimiento global, navega por **Ajustes** y **EDO**, y prueba los controles de frase, importación/exportación y lectura por voz.
 5. Cierra sesión y vuelve a entrar para comprobar que los ejemplos siguen guardados.
 6. Para validar lateralidad, con la cámara frontal muestra primero solo tu mano derecha y luego solo tu izquierda, manteniendo el rostro y la otra mano fuera de cuadro. Comprueba que **Mano derecha: detectada** y **Mano izquierda: detectada** correspondan a la mano física, en ese orden; repite varias veces y en otra cámara si está disponible. El video y el canvas se espejan con CSS, pero la inferencia recibe el elemento de video. No inviertas etiquetas automáticamente si esta prueba no confirma un error.
 
@@ -106,7 +109,7 @@ Si el navegador deniega la cámara, revisa los permisos del sitio y recarga. La 
 
 La autenticación y la biblioteca en la nube requieren un proyecto Supabase configurado. Sin él, el formulario no permite iniciar sesión y no existe un modo de acceso de demostración. Google y Apple permanecen deshabilitados: sus flujos OAuth no están implementados.
 
-Al iniciar sesión, se carga la biblioteca una vez. Reconocimiento, filtros EDO, coordenadas filtradas y buffers de captura/comparación se mantienen en RAM; no se consulta Supabase por cuadro de cámara. Al finalizar una captura se guardan coordenadas y características raw/filtradas, tiempos relativos y metadatos. No se suben videos ni fotografías. Las capturas pendientes se identifican como pendientes y no intervienen en el reconocimiento hasta sincronizarse.
+Al iniciar sesión, se carga la biblioteca. Reconocimiento, filtros EDO, coordenadas filtradas y buffers de captura/comparación se mantienen en RAM; no se consulta Supabase por cuadro de cámara. Al finalizar una captura se guardan coordenadas y características raw/filtradas, tiempos relativos y metadatos. No se suben videos ni fotografías. Las capturas pendientes se identifican como pendientes y no intervienen en el reconocimiento hasta sincronizarse. El flujo unificado reutiliza las categorías y el formato de muestras existentes; por sí mismo no elimina ni sobrescribe registros remotos. La acción explícita **Borrar** elimina la seña elegida de ambas categorías.
 
 El formato de muestra versión 2 se valida en `js/sampleFormat.js`: conserva cuadros sincronizados de las ramas raw y EDO, coordenadas originales de manos/rostro, características faciales usadas, presencia, lateralidad, tiempos relativos y secuencias holísticas. Se validan dimensiones, valores finitos, orden temporal, duración máxima de 30 segundos y tamaño máximo de 12 MiB. Las muestras versión 1 se conservan y reconocen con su alcance original de manos, sin inventar datos faciales.
 

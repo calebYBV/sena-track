@@ -1,5 +1,7 @@
 import { extractHolisticFeatures } from "./holistic.js";
+import { isRecognitionActive, selectUnifiedPrediction } from "./recognitionState.js";
 import { SAMPLE_FORMAT_VERSION } from "./sampleFormat.js";
+import { analyzeUnifiedCapture } from "./unifiedCapture.js";
 
 export function createTraining({ state, dom, ui, storage, recognition }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -7,7 +9,31 @@ const { setNote, renderList, showLocked, addToPhrase, updateComparison, setEvalu
 const { saveAll } = storage;
 const { toSequencePair, classifyFrame, meanDescriptors,
   holisticMotionSequence } = recognition;
-const N_STEPS = 24, CAPTURE_FRAMES = 40;
+const N_STEPS = 24;
+
+function clearRecognitionTimers(){
+  for (const timer of state.recognitionTimers){ clearTimeout(timer); }
+  state.recognitionTimers.clear();
+}
+
+function scheduleRecognitionTimeout(callback, delay){
+  const timer = setTimeout(() => {
+    state.recognitionTimers.delete(timer);
+    callback();
+  }, delay);
+  state.recognitionTimers.add(timer);
+}
+
+function setRecognitionEnabled(enabled){
+  state.recognitionEnabled = !!enabled;
+  if (!state.recognitionEnabled){
+    clearRecognitionTimers();
+    state.motion = null;
+    state.cand = null; state.candCount = 0; state.committed = null;
+    state.candSince = null; state.neutralSince = null; state.noHandSince = null;
+    state.readoutLock = 0;
+  }
+}
 function filterMetadata(config){
   return {
     ...config,
@@ -66,18 +92,18 @@ function setCaptureProgress(label, current, total, detail = ""){
 }
 function startMotion(purpose, label){
   if (!state.ready || state.motion || state.capState) return;
-  if (purpose === "recognize" && !state.motions.some(sample => sample.syncStatus !== "pending")){
-    setNote("Primero enseña al menos una seña con movimiento (tipo “Con movimiento”).");
-    return;
-  }
   setNote("");
   if (purpose === "recognize"){
+    state.recognitionEnabled = true;
     state.motion = {
       purpose, phase: "rec", frames: [], lastEvaluatedAt: 0,
-      armed: true, unrecognizedSince: 0
+      armed: true, unrecognizedSince: 0, segmentActive: false
     };
     refreshButtons();
-    showLocked("Reconociendo movimientos…", "Realiza una seña con movimiento.", false, 60 * 60 * 1000);
+    state.readoutLock = 0;
+    signEl.textContent = "Reconocimiento activo";
+    signEl.className = "sign idle";
+    metaEl.textContent = "Señas estáticas, dinámicas y faciales habilitadas.";
     return;
   }
   if (purpose === "train") setEvaluationEnabled(false);
@@ -103,7 +129,7 @@ function startMotion(purpose, label){
       countEl.classList.add("on");
       setCaptureProgress(`Prepárate… ${n}`, 0, state.motion.ms, "0 cuadros");
       n--;
-      setTimeout(step, 800);
+      scheduleRecognitionTimeout(step, 800);
     }
     else {
       countEl.classList.remove("on");
@@ -121,8 +147,10 @@ function recognizeMotion(res){
   if (!res){
     motion.frames = [];
     motion.lastEvaluatedAt = 0;
-    motion.unrecognizedSince = 0;
-    signEl.textContent = "Muestra la seña con movimiento";
+    motion.segmentActive = false;
+    motion.unrecognizedSince ||= performance.now();
+    ui.stability(null, performance.now());
+    signEl.textContent = "Esperando una seña";
     signEl.className = "sign idle";
     metaEl.textContent = "";
     return;
@@ -131,7 +159,7 @@ function recognizeMotion(res){
   if (lastFrame && res.timestamp - lastFrame.time > 250){
     motion.frames = [];
     motion.lastEvaluatedAt = 0;
-    motion.unrecognizedSince = 0;
+    motion.segmentActive = false;
   }
   motion.frames.push({
     rawFrame: res.rawFrame,
@@ -141,69 +169,161 @@ function recognizeMotion(res){
     hand: res.hand,
     time: res.timestamp
   });
+  const aspect = video.videoWidth / video.videoHeight;
+  const staticRaw = classifyFrame(res.rawFrame, "raw", "static");
+  const staticFiltered = classifyFrame(res.filteredFrame, "filtered", "static");
+  const staticMain = state.filterConfig.model === "off" ? staticRaw : staticFiltered;
+  const evaluationTime = res.timestamp;
+  const analysisInterval = motion.armed ? 180 : 100;
+  if (res.timestamp - motion.lastEvaluatedAt < analysisInterval){
+    if (!motion.segmentActive) ui.stability(staticMain, evaluationTime);
+    return;
+  }
+  motion.lastEvaluatedAt = res.timestamp;
+  const { rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances } =
+    recognition.pairedHolisticDistances({
+      rawFrame: res.rawFrame,
+      filteredFrame: res.filteredFrame
+    }, "static");
+  const staticReference = $("evaluationReference").value || staticMain?.label;
+  const staticExamples = state.samples.filter(example => example.l === staticReference);
+  updateComparison({
+    kind: "static", detected: true, rawPrediction: staticRaw,
+    filteredPrediction: staticFiltered,
+    rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances,
+    hasReference: staticExamples.length > 0,
+    legacyReference: staticExamples.some(example => !example.components),
+    referenceFilterMismatch: staticExamples.some(recognition.hasFilterReferenceMismatch)
+  });
+
+  if (!motion.armed){
+    motion.frames = motion.frames.slice(-10);
+    const tail = motion.frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
+    const quiet = tail.length >= 8 && state.motions.every(sample => {
+      if (sample.syncStatus === "pending") return true;
+      const required = sample.components || {
+        left: sample.captureMeta?.handedness
+          ? sample.captureMeta.handedness === "Left" : res.hand === "Left",
+        right: sample.captureMeta?.handedness
+          ? sample.captureMeta.handedness === "Right" : res.hand === "Right",
+        face: false
+      };
+      const analysis = analyzeUnifiedCapture(tail, required, aspect);
+      return analysis.reason !== "missing-required-components" && !analysis.motionDetected;
+    });
+    if (quiet){
+      motion.unrecognizedSince ||= res.timestamp;
+      if (res.timestamp - motion.unrecognizedSince >= 500){
+        motion.armed = true;
+        motion.segmentActive = false;
+        motion.frames = [motion.frames.at(-1)];
+        motion.unrecognizedSince = 0;
+      }
+    } else motion.unrecognizedSince = 0;
+    ui.stability(staticMain, evaluationTime);
+    return;
+  }
+
+  const frames = motion.frames;
+  if (frames.length < 8){
+    ui.stability(staticMain, evaluationTime);
+    return;
+  }
+  const rawFrames = frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
+  const motionAnalyses = state.motions
+    .filter(sample => sample.syncStatus !== "pending")
+    .map(sample => {
+      const required = sample.components || {
+        left: sample.captureMeta?.handedness
+          ? sample.captureMeta.handedness === "Left" : res.hand === "Left",
+        right: sample.captureMeta?.handedness
+          ? sample.captureMeta.handedness === "Right" : res.hand === "Right",
+        face: false
+      };
+      return analyzeUnifiedCapture(rawFrames, required, aspect);
+    });
+  const motionDetected = motionAnalyses.some(result => result.motionDetected);
+  if (motionDetected) motion.segmentActive = true;
+  if (motion.segmentActive){
+    const durationLimitMs = parseFloat($("dur").value) * 1000;
+    const segmentDuration = frames.at(-1).time - frames[0].time;
+    if (segmentDuration > durationLimitMs){
+      motion.armed = false;
+      motion.segmentActive = false;
+      motion.frames = [];
+      motion.unrecognizedSince = 0;
+      signEl.textContent = "Movimiento demasiado largo o incompleto";
+      signEl.className = "sign idle";
+      metaEl.textContent = "";
+      return;
+    }
+    state.cand = null; state.candCount = 0; state.candSince = null;
+    holdBar.style.width = "0";
+    if (motionAnalyses.some(result => result.kind === "motion")){
+      const t0 = frames[0].time;
+      const query = {
+        rawFrames: frames.map(frame => ({ ...frame.rawFrame, time: frame.time - t0 })),
+        filteredFrames: frames.map(frame => ({ ...frame.filteredFrame, time: frame.time - t0 })),
+        rawLegacySequence: null,
+        filteredLegacySequence: null
+      };
+      const pair = legacyMotionPair(frames.map(frame => ({ ...frame, time: frame.time - t0 })),
+        aspect);
+      if (pair){
+        query.rawLegacySequence = pair.raw;
+        query.filteredLegacySequence = pair.filtered;
+      }
+      const rawMotion = classifyFrame(query, "raw", "motion");
+      const filteredMotion = classifyFrame(query, "filtered", "motion");
+      const motionMain = state.filterConfig.model === "off" ? rawMotion : filteredMotion;
+      const selected = selectUnifiedPrediction(staticMain, motionMain);
+      const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
+      const reference = $("evaluationReference").value || selected?.label;
+      const examples = state.motions.filter(example => example.l === reference);
+      updateComparison({
+        kind: "motion", detected: true, rawPrediction: rawMotion,
+        filteredPrediction: filteredMotion, rawDistances, filteredDistances,
+        hasReference: examples.length > 0,
+        legacyReference: examples.some(example => !example.components),
+        referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
+      });
+      if (selected?.reason === "ambiguous"){
+        ui.stability(selected, evaluationTime);
+      } else if (selected?.label){
+        state.committed = selected.label;
+        const score = selected.conf == null ? "" :
+          ` · Puntuación del reconocedor: ${Math.round(selected.conf * 100)}% (no es probabilidad validada)`;
+        showLocked(selected.label, `${selected.src || "seña guardada"}${score}`, true);
+        addToPhrase(selected.label);
+      } else {
+        signEl.textContent = "Movimiento completo sin coincidencia";
+        signEl.className = "sign idle";
+        metaEl.textContent = "";
+      }
+      motion.armed = false;
+      motion.segmentActive = false;
+      motion.frames = [];
+      motion.unrecognizedSince = 0;
+      return;
+    }
+    if (motionAnalyses.some(result => result.reason === "incomplete-motion")){
+      signEl.textContent = "Movimiento en curso";
+      signEl.className = "sign idle";
+      metaEl.textContent = "";
+      return;
+    }
+  }
+
   const duration = parseFloat($("dur").value) * 1000;
   const cutoff = res.timestamp - duration;
-  while (motion.frames.length > 8 && motion.frames[1].time < cutoff) motion.frames.shift();
-  const frames = motion.frames;
-  if (frames.length < 8 || res.timestamp - motion.lastEvaluatedAt < 250) return;
-  motion.lastEvaluatedAt = res.timestamp;
-
-  const t0 = frames[0].time;
-  const query = {
-    rawFrames: frames.map(frame => ({ ...frame.rawFrame, time: frame.time - t0 })),
-    filteredFrames: frames.map(frame => ({ ...frame.filteredFrame, time: frame.time - t0 })),
-    rawLegacySequence: null,
-    filteredLegacySequence: null
-  };
-  const pair = legacyMotionPair(frames.map(frame => ({ ...frame, time: frame.time - t0 })),
-    video.videoWidth / video.videoHeight);
-  if (pair){
-    query.rawLegacySequence = pair.raw;
-    query.filteredLegacySequence = pair.filtered;
+  while (motion.frames.length > 8 && motion.frames[1].time < cutoff){
+    motion.frames.shift();
   }
-  const raw = classifyFrame(query, "raw", "motion");
-  const filtered = classifyFrame(query, "filtered", "motion");
-  const main = state.filterConfig.model === "off" ? raw : filtered;
-  const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
-  const reference = $("evaluationReference").value || main?.label;
-  const examples = state.motions.filter(example => example.l === reference);
-  updateComparison({
-    kind: "motion", detected: true, rawPrediction: raw, filteredPrediction: filtered,
-    rawDistances, filteredDistances, hasReference: examples.length > 0,
-    legacyReference: examples.some(example => !example.components),
-    referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
-  });
-  if (main?.reason === "ambiguous"){
-    motion.unrecognizedSince = 0;
-    if (performance.now() >= state.readoutLock){
-      signEl.textContent = "Reconocimiento ambiguo";
-      signEl.className = "sign idle";
-      metaEl.textContent = main.candidates?.length
-        ? `Candidatas: ${main.candidates.join(" / ")}` : "";
-    }
-    return;
-  }
-  if (main?.label){
-    motion.unrecognizedSince = 0;
-    if (motion.armed){
-      motion.armed = false;
-      const score = main.conf == null ? "" :
-        ` · Puntuación del reconocedor: ${Math.round(main.conf * 100)}% (no es probabilidad validada)`;
-      showLocked(main.label, main.src + score, true);
-      addToPhrase(main.label);
-    } else {
-      signEl.textContent = main.label;
-      signEl.className = "sign";
-      metaEl.textContent = main.src;
-    }
-    return;
-  }
-  if (!motion.unrecognizedSince) motion.unrecognizedSince = res.timestamp;
-  if (res.timestamp - motion.unrecognizedSince >= 500) motion.armed = true;
+  ui.stability(staticMain, evaluationTime);
   if (performance.now() >= state.readoutLock){
-    signEl.textContent = "Reconociendo movimientos…";
-    signEl.className = "sign idle";
-    metaEl.textContent = "";
+    signEl.textContent = staticMain?.label || "Esperando una seña";
+    signEl.className = staticMain?.label ? "sign" : "sign idle";
+    metaEl.textContent = staticMain?.src || "";
   }
 }
 function tickMotion(res){
@@ -313,43 +433,28 @@ function finishMotion(){
 }
 
 /* ---------- Entrenamiento ---------- */
-const kind = () => document.querySelector("input[name=kind]:checked").value;
-const HINTS = {
-  static: "Haz la seña con la mano casi quieta y muévela un poco mientras captura. Repite 2 o 3 veces.",
-  motion: "Tras la cuenta regresiva haz el movimiento completo una sola vez. Graba 5 veces o más."
-};
 function refreshKind(){
-  const selectedKind = kind();
-  $("btnTrain").textContent = selectedKind === "static" ? "Capturar seña" : "Grabar movimiento";
-  const required = components();
-  $("trainHint").textContent = selectedKind === "static" && required.face &&
-    !required.left && !required.right
-    ? "Mantén la cabeza en cuadro y realiza la expresión que define la seña."
-    : selectedKind === "static" && required.face
-      ? "Mantén en cuadro las manos y el rostro; realiza la configuración y expresión de la seña."
-      : HINTS[selectedKind];
+  $("btnTrain").textContent = "Capturar seña";
+  $("trainHint").textContent =
+    "Mantén la postura o realiza el movimiento completo; el sistema analizará la secuencia automáticamente.";
   if (!state.capState && !state.motion){
-    setCaptureProgress(selectedKind === "static" ? "Listo para capturar" : "Listo para grabar",
-      0, selectedKind === "static" ? CAPTURE_FRAMES : parseFloat($("dur").value) * 1000, "");
+    setCaptureProgress("Listo para capturar", 0, parseFloat($("dur").value) * 1000, "");
   }
 }
-document.querySelectorAll("input[name=kind]").forEach(r => r.onchange = refreshKind);
 for (const id of ["requireLeft", "requireRight", "requireFace"]){
   $(id).addEventListener("change", refreshKind);
 }
 
 function refreshButtons(){
+  const recognitionActive = isRecognitionActive(state);
   const capturing = !!state.capState || state.motion?.purpose === "train";
-  $("btnTrain").disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
+  $("btnTrain").disabled = !state.ready || capturing || recognitionActive;
   $("btnMotion").disabled = !state.ready || capturing;
-  $("btnMotion").textContent = state.motion?.purpose === "recognize"
-    ? "Detener reconocimiento" : "Reconocer movimiento";
-  $("btnMotion").setAttribute("aria-pressed", String(state.motion?.purpose === "recognize"));
-  document.querySelectorAll('input[name="kind"]').forEach(input => {
-    input.disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
-  });
+  $("btnMotion").textContent = recognitionActive
+    ? "Detener reconocimiento" : "Iniciar reconocimiento";
+  $("btnMotion").setAttribute("aria-pressed", String(recognitionActive));
   for (const id of ["requireLeft", "requireRight", "requireFace"]){
-    $(id).disabled = !state.ready || capturing || state.motion?.purpose === "recognize";
+    $(id).disabled = !state.ready || capturing || recognitionActive;
   }
 }
 function capture(f){
@@ -358,68 +463,117 @@ function capture(f){
   if (!hasRequiredParts(f.presence, capture.components)){
     capture.rawFrames = [];
     capture.filteredFrames = [];
-    capture.rawDescriptors = [];
-    capture.filteredDescriptors = [];
     capture.startedAt = f.time;
-    capture.left = CAPTURE_FRAMES;
-    setCaptureProgress("Falta un componente requerido", 0, CAPTURE_FRAMES);
+    setCaptureProgress("Falta un componente requerido", 0, capture.ms);
     setNote("Mano o rostro requerido fuera de cámara");
     return;
   }
   capture.rawFrames ||= [];
   capture.filteredFrames ||= [];
-  capture.rawDescriptors ||= [];
-  capture.filteredDescriptors ||= [];
   capture.rawFrames.push(asStoredFrame(f.rawFrame, f.time - capture.startedAt, f.presence));
   capture.filteredFrames.push(asStoredFrame(f.filteredFrame, f.time - capture.startedAt, f.presence));
+  const elapsed = f.time - capture.startedAt;
+  setCaptureProgress("Capturando seña", elapsed, capture.ms,
+    `${capture.rawFrames.length} cuadros`);
+  if (elapsed >= capture.ms) finishUnifiedCapture(capture);
+}
+
+function finishUnifiedCapture(capture){
   const aspect = video.videoWidth / video.videoHeight;
-  capture.rawDescriptors.push(extractHolisticFeatures(f.rawFrame, aspect, capture.components));
-  capture.filteredDescriptors.push(extractHolisticFeatures(f.filteredFrame, aspect, capture.components));
-  state.capState.left--;
-  const captured = CAPTURE_FRAMES - state.capState.left;
-  setCaptureProgress("Capturando seña", captured, CAPTURE_FRAMES);
-  if (state.capState.left <= 0){
-    const sample = {
-      l: capture.label,
-      kind: "static",
-      formatVersion: SAMPLE_FORMAT_VERSION,
-      captureId: capture.captureId,
-      components: capture.components,
-      h: recognition.meanDescriptors(capture.filteredDescriptors),
-      rh: recognition.meanDescriptors(capture.rawDescriptors),
-      rawFrames: capture.rawFrames,
-      filteredFrames: capture.filteredFrames,
-      source: "paired-raw-and-filtered-v2",
-      filter: filterMetadata(state.filterConfig),
-      captureMeta: {
-        handCount: Math.max(...capture.rawFrames.map(frame =>
-          Number(frame.presence.Left) + Number(frame.presence.Right))),
-        faceAvailable: capture.rawFrames.some(frame => frame.presence.face),
-        mediapipeModel: `hand_landmarker_float16_v1${capture.components.face ? ";face_landmarker_float16_v1;face-blendshapes-v1" : ""}`,
-        coordinateSpace: "mediapipe-normalized-image-v1",
-        width: video.videoWidth,
-        height: video.videoHeight,
-        handedness: capture.components.left && !capture.components.right ? "Left" :
-          capture.components.right && !capture.components.left ? "Right" : null,
-        mirroredDisplay: true,
-        capturedAt: capture.capturedAt
-      },
-      syncStatus: "pending"
+  const analysis = analyzeUnifiedCapture(capture.rawFrames, capture.components, aspect);
+  state.capState = null;
+  setEvaluationEnabled(true);
+  refreshButtons();
+  if (!analysis.kind){
+    setNote(analysis.reason === "incomplete-motion"
+      ? "Movimiento incompleto: vuelve a capturar la seña y mantenla estable al terminar."
+      : analysis.reason === "missing-required-components"
+        ? "Falta un componente requerido; la captura no se guardó."
+        : "No se pudo analizar una secuencia válida; la captura no se guardó.");
+    setCaptureProgress("Captura incompleta", 0, capture.ms, `${capture.rawFrames.length} cuadros`);
+    return;
+  }
+  const rawDescriptors = capture.rawFrames.map(frame =>
+    extractHolisticFeatures(frame, aspect, capture.components));
+  const filteredDescriptors = capture.filteredFrames.map(frame =>
+    extractHolisticFeatures(frame, aspect, capture.components));
+  if (rawDescriptors.some(descriptor => !descriptor) ||
+      filteredDescriptors.some(descriptor => !descriptor)){
+    setNote("La captura perdió características requeridas; no se guardó.");
+    setCaptureProgress("Captura incompleta", 0, capture.ms, `${capture.rawFrames.length} cuadros`);
+    return;
+  }
+  const captureMeta = {
+    handCount: Math.max(0, ...capture.rawFrames.map(frame =>
+      Number(frame.presence.Left) + Number(frame.presence.Right))),
+    faceAvailable: capture.rawFrames.some(frame => frame.presence.face),
+    mediapipeModel: `hand_landmarker_float16_v1${capture.components.face ? ";face_landmarker_float16_v1;face-blendshapes-v1" : ""}`,
+    coordinateSpace: "mediapipe-normalized-image-v1",
+    width: video.videoWidth,
+    height: video.videoHeight,
+    handedness: capture.components.left && !capture.components.right ? "Left" :
+      capture.components.right && !capture.components.left ? "Right" : null,
+    mirroredDisplay: true,
+    capturedAt: capture.capturedAt
+  };
+  const common = {
+    l: capture.label,
+    kind: analysis.kind,
+    formatVersion: SAMPLE_FORMAT_VERSION,
+    captureId: capture.captureId,
+    components: capture.components,
+    rawFrames: capture.rawFrames,
+    filteredFrames: capture.filteredFrames,
+    source: "paired-raw-and-filtered-v2",
+    filter: filterMetadata(state.filterConfig),
+    captureMeta,
+    syncStatus: "pending"
+  };
+  let sample;
+  if (analysis.kind === "motion"){
+    const rawSequence = holisticMotionSequence(
+      capture.rawFrames, capture.components, aspect);
+    const filteredSequence = holisticMotionSequence(
+      capture.filteredFrames, capture.components, aspect);
+    if (!rawSequence || !filteredSequence){
+      setNote("No se pudo derivar la trayectoria EDO; la captura no se guardó.");
+      setCaptureProgress("Captura incompleta", 0, capture.ms, `${capture.rawFrames.length} cuadros`);
+      return;
+    }
+    sample = {
+      ...common,
+      rawHolisticSequence: rawSequence,
+      filteredHolisticSequence: filteredSequence,
+      captureAnalysis: {
+        motionDetected: true,
+        settledAtEnd: analysis.settledAtEnd,
+        travel: analysis.travel,
+        handShapeChange: analysis.handShapeChange,
+        facialChange: analysis.facialChange
+      }
+    };
+    state.motions.push(sample);
+  } else {
+    sample = {
+      ...common,
+      h: recognition.meanDescriptors(filteredDescriptors),
+      rh: recognition.meanDescriptors(rawDescriptors)
     };
     state.samples.push(sample);
-    recognition.prepareFilteredReferences(state.filterConfig);
-    void saveAll().then(saved => {
-      $("trainHint").textContent = saved
-        ? `Listo: “${capture.label}” guardada en Supabase.`
-        : `“${capture.label}” pendiente de sincronización; todavía no se usa para reconocer.`;
-      renderList();
-    }).catch(error => setNote(`No se pudo guardar la captura: ${error.message}`));
-    renderList();
-    $("trainHint").textContent = `Captura lista para guardar “${capture.label}”.`;
-    setCaptureProgress("Captura completada", CAPTURE_FRAMES, CAPTURE_FRAMES);
-    state.capState = null; refreshButtons();
-    setEvaluationEnabled(true);
   }
+  recognition.prepareFilteredReferences(state.filterConfig);
+  void saveAll().then(saved => {
+    $("trainHint").textContent = saved
+      ? `Listo: “${capture.label}” guardada en Supabase.`
+      : `“${capture.label}” pendiente de sincronización; todavía no se usa para reconocer.`;
+    renderList();
+  }).catch(error => setNote(`No se pudo guardar la captura: ${error.message}`));
+  renderList();
+  $("trainHint").textContent = analysis.kind === "motion"
+    ? `Se detectó una trayectoria completa para “${capture.label}”.`
+    : `Se detectó una postura estable para “${capture.label}”.`;
+  setCaptureProgress("Captura completada", capture.ms, capture.ms,
+    `${capture.rawFrames.length} cuadros`);
 }
 function resetTracking(){
   if (state.motion?.phase === "rec"){
@@ -433,11 +587,9 @@ function resetTracking(){
   if (state.capState?.phase === "rec"){
     state.capState.rawFrames = [];
     state.capState.filteredFrames = [];
-    state.capState.rawDescriptors = [];
-    state.capState.filteredDescriptors = [];
-    state.capState.left = CAPTURE_FRAMES;
     state.capState.startedAt = performance.now();
-    setCaptureProgress("Se perdió un componente; reiniciando", 0, CAPTURE_FRAMES);
+    setCaptureProgress("Se perdió un componente; reiniciando",
+      0, state.capState.ms);
     $("trainHint").textContent = "Se perdió un componente requerido; reiniciando la captura.";
     setNote("Mano o rostro requerido fuera de cámara");
   }
@@ -451,11 +603,12 @@ $("btnTrain").onclick = () => {
     $("trainHint").textContent = "Selecciona al menos una mano o el rostro como componente requerido.";
     return;
   }
-  if (kind() === "motion"){ startMotion("train", label); return; }
-  setCaptureProgress("Preparando captura", 0, CAPTURE_FRAMES);
+  const durationMs = parseFloat($("dur").value) * 1000;
+  setCaptureProgress("Preparando captura", 0, durationMs);
   state.capState = {
-    label, phase: "count", left: CAPTURE_FRAMES, captured: [], components: required,
-    captureId: crypto.randomUUID(), startedAt: 0, capturedAt: null
+    label, phase: "count", ms: durationMs, components: required,
+    captureId: crypto.randomUUID(), startedAt: 0, capturedAt: null,
+    rawFrames: [], filteredFrames: []
   };
   setEvaluationEnabled(false);
   $("btnTrain").disabled = true;
@@ -465,14 +618,14 @@ $("btnTrain").onclick = () => {
     if (!state.capState) return;
     if (n > 0){
       $("trainHint").textContent = `Prepara la mano… ${n}`;
-      setCaptureProgress(`Prepárate… ${n}`, 0, CAPTURE_FRAMES);
+      setCaptureProgress(`Prepárate… ${n}`, 0, durationMs);
       n--;
-      setTimeout(tick, 800);
+      scheduleRecognitionTimeout(tick, 800);
     }
     else {
       state.onRecordingStart?.();
-      $("trainHint").textContent = "Capturando… muévela un poco.";
-      setCaptureProgress("Capturando seña", 0, CAPTURE_FRAMES);
+      $("trainHint").textContent = "Captura la postura o realiza el movimiento completo.";
+      setCaptureProgress("Capturando seña", 0, durationMs);
       state.capState.startedAt = performance.now();
       state.capState.capturedAt = new Date().toISOString();
       state.capState.phase = "rec";
@@ -481,7 +634,8 @@ $("btnTrain").onclick = () => {
   tick();
 };
 $("btnMotion").onclick = () => {
-  if (state.motion?.purpose === "recognize"){
+  if (state.recognitionEnabled || state.motion?.purpose === "recognize"){
+    setRecognitionEnabled(false);
     state.motion = null;
     state.cand = null; state.candCount = 0; state.committed = null;
     state.readoutLock = 0;
@@ -494,8 +648,7 @@ $("btnMotion").onclick = () => {
 document.addEventListener("keydown", e => {
   if (e.code === "Space" && !/^(INPUT|TEXTAREA|BUTTON|SELECT)$/.test(e.target.tagName)){
     e.preventDefault();
-    if (state.motion?.purpose === "recognize") $("btnMotion").click();
-    else startMotion("recognize");
+    $("btnMotion").click();
   }
 });
 

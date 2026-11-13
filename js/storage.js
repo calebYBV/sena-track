@@ -603,20 +603,31 @@ export function createStorage({ state, dom, ui }){
   }
 
   async function deleteSign(name, kind){
-    const removedSamples = kind === "s"
-      ? state.samples.filter(sample => sample.l === name)
-      : state.motions.filter(sample => sample.l === name);
-    const clientIds = await Promise.all(removedSamples.map(ensureSampleId));
-    const nextSamples = kind === "s" ? state.samples.filter(sample => sample.l !== name) : state.samples;
-    const nextMotions = kind === "m" ? state.motions.filter(sample => sample.l !== name) : state.motions;
+    const kinds = kind === "all" ? ["s", "m"] : [kind];
+    const removedByKind = new Map([
+      ["s", kinds.includes("s") ? state.samples.filter(sample => sample.l === name) : []],
+      ["m", kinds.includes("m") ? state.motions.filter(sample => sample.l === name) : []]
+    ]);
+    const clientIdsByKind = new Map(await Promise.all(
+      [...removedByKind].map(async ([sampleKind, examples]) => [
+        sampleKind, await Promise.all(examples.map(ensureSampleId))
+      ])
+    ));
+    const nextSamples = kinds.includes("s")
+      ? state.samples.filter(sample => sample.l !== name) : state.samples;
+    const nextMotions = kinds.includes("m")
+      ? state.motions.filter(sample => sample.l !== name) : state.motions;
     const cache = await readCache() || currentSnapshot();
     cache.samples = nextSamples;
     cache.motions = nextMotions;
     cache.pendingDeletes ||= [];
-    const dbKind = kind === "s" ? "static" : "motion";
-    const queued = cache.pendingDeletes.find(item => item.name === name && item.kind === dbKind);
-    if (queued) queued.clientIds = [...new Set([...(queued.clientIds || []), ...clientIds])];
-    else cache.pendingDeletes.push({ name, kind: dbKind, clientIds });
+    for (const [sampleKind, clientIds] of clientIdsByKind){
+      if (!clientIds.length) continue;
+      const dbKind = sampleKind === "s" ? "static" : "motion";
+      const queued = cache.pendingDeletes.find(item => item.name === name && item.kind === dbKind);
+      if (queued) queued.clientIds = [...new Set([...(queued.clientIds || []), ...clientIds])];
+      else cache.pendingDeletes.push({ name, kind: dbKind, clientIds });
+    }
     try {
       await storePendingCache(cache);
     } catch (error){

@@ -5,8 +5,13 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRecognition } from "../js/recognition.js";
 
 const script = fileURLToPath(new URL("../scripts/evaluate.mjs", import.meta.url));
+const recognition = createRecognition({
+  state: { samples: [], motions: [] },
+  dom: { $: () => ({ value: "0.8" }), video: { videoWidth: 640, videoHeight: 480 } }
+});
 
 function makeCapture(captureId, truth, kind = "static", participantId, sessionId, frameCount = 20){
   const rawFrames = Array.from({ length: frameCount }, (_, index) => ({
@@ -20,7 +25,7 @@ function makeCapture(captureId, truth, kind = "static", participantId, sessionId
       ])
     }
   }));
-  return {
+  const capture = {
     l: truth,
     truth,
     kind,
@@ -32,19 +37,28 @@ function makeCapture(captureId, truth, kind = "static", participantId, sessionId
     source: "paired-raw-and-filtered-v2",
     rawFrames,
     filteredFrames: structuredClone(rawFrames),
-    h: { hands: { Left: Array(63).fill(0) }, placement: null, face: null },
-    rh: { hands: { Left: Array(63).fill(0) }, placement: null, face: null }
+    components: { left: true, right: false, face: false }
   };
+  if (kind === "motion"){
+    capture.rawHolisticSequence = recognition.holisticMotionSequence(
+      rawFrames, capture.components, 4 / 3);
+    capture.filteredHolisticSequence = structuredClone(capture.rawHolisticSequence);
+  } else {
+    capture.h = { hands: { Left: Array(63).fill(0) }, placement: null, face: null };
+    capture.rh = structuredClone(capture.h);
+  }
+  return capture;
 }
 
 async function runCli(directory, evaluationKind, evaluationFrameCount = 20){
-  const reference = makeCapture("train-1", "A", "static", "P1", "S1");
-  const validation = makeCapture("validation-1", "A", "static", "P2", "S2");
-  const evaluation = makeCapture("test-1", "A", "static", "P3", "S3", evaluationFrameCount);
+  const fixtureKind = evaluationKind === "motion" ? "motion" : "static";
+  const reference = makeCapture("train-1", "A", fixtureKind, "P1", "S1");
+  const validation = makeCapture("validation-1", "A", fixtureKind, "P2", "S2");
+  const evaluation = makeCapture("test-1", "A", fixtureKind, "P3", "S3", evaluationFrameCount);
   if (evaluationKind === "missing") delete evaluation.kind;
   else if (evaluationKind !== "static") evaluation.kind = evaluationKind;
   const files = [
-    ["training.json", { static: [reference] }],
+    ["training.json", { [fixtureKind]: [reference] }],
     ["validation.json", { samples: [validation], staticTolerance: 0.8, motionTolerance: 0.7 }],
     ["test.json", { samples: [evaluation] }]
   ];
@@ -87,6 +101,20 @@ test("evaluation CLI reports separate validation and test metrics for all EDO mo
     }
     assert.equal(output.test.metricsByKind.motion, null);
     assert.equal(output.split.sessionSeparationChecked, true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("evaluation CLI accepts unified-format motion captures", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sena-track-eval-"));
+  try {
+    const result = await runCli(directory, "motion");
+    assert.equal(result.status, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.test.metricsByKind.motion.off.count, 1);
+    assert.equal(output.test.metricsByKind.motion.off.accuracy, 1);
+    assert.equal(output.test.metricsByKind.static, null);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
