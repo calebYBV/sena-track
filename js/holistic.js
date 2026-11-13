@@ -11,6 +11,7 @@ const HAND_SHAPE_WEIGHT_WITH_FACE = 0.35;
 const PLACEMENT_WEIGHT_WITH_FACE = 0.15;
 const BIMANUAL_HAND_SHAPE_WEIGHT = 0.8;
 const BIMANUAL_PLACEMENT_WEIGHT = 0.2;
+const HEAD_ANGLE_FEATURES = new Set([29, 31]);
 
 const point = value => Array.isArray(value)
   ? { x: value[0], y: value[1], z: value[2] } : value;
@@ -194,9 +195,14 @@ export function holisticDistance(a, b, required){
   }
   if (required.face){
     if (!Array.isArray(a.face) || !Array.isArray(b.face) || a.face.length !== b.face.length) return Infinity;
+    const faceDifference = a.face.reduce((sum, value, index) => {
+      const difference = HEAD_ANGLE_FEATURES.has(index)
+        ? ((value - b.face[index] + 1) % 2 + 2) % 2 - 1
+        : value - b.face[index];
+      return sum + difference ** 2;
+    }, 0);
     terms.push({
-      distance: Math.sqrt(a.face.reduce((sum, value, index) =>
-        sum + (value - b.face[index]) ** 2, 0)) * FACE_FEATURE_SCALE,
+      distance: Math.sqrt(faceDifference) * FACE_FEATURE_SCALE,
       weight: sides.length ? FACE_WEIGHT_WITH_HANDS : 1
     });
     const at = a.trajectory?.face, bt = b.trajectory?.face;

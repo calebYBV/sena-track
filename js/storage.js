@@ -142,13 +142,16 @@ export function createStorage({ state, dom, ui }){
 
   function applySettings(settings){
     if (!settings) return;
+    const storedModel = settings.filter_model ?? state.filterConfig.model;
+    const legacyModeDisabled = storedModel === "off";
     state.filterConfig = normalizeFilterConfig({
-      model: settings.filter_model ?? state.filterConfig.model,
+      model: legacyModeDisabled ? "first" : storedModel,
       tau: settings.tau ?? state.filterConfig.tau,
       zeta: settings.zeta ?? state.filterConfig.zeta,
       omegaN: settings.omega_n ?? state.filterConfig.omegaN,
       compareVisual: settings.show_raw_points ?? state.filterConfig.compareVisual
     });
+    if (legacyModeDisabled) ui.setRecognitionMode("mediapipe");
     $("tol").value = settings.static_tolerance ?? $("tol").value;
     $("tolM").value = settings.motion_tolerance ?? $("tolM").value;
     $("dur").value = settings.capture_duration ?? $("dur").value;
@@ -668,7 +671,13 @@ export function createStorage({ state, dom, ui }){
     };
     const imported = await importIntoState(normalized);
     if (library.filters){
-      state.filterConfig = normalizeFilterConfig(library.filters);
+      const importedConfig = normalizeFilterConfig(library.filters);
+      const legacyModeDisabled = importedConfig.model === "off";
+      state.filterConfig = normalizeFilterConfig({
+        ...importedConfig,
+        model: legacyModeDisabled ? "first" : importedConfig.model
+      });
+      if (legacyModeDisabled) ui.setRecognitionMode("mediapipe");
       state.onFilterChange?.();
     }
     renderList();

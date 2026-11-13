@@ -6,6 +6,11 @@ export function calculateDistanceReduction(rawDistance, filteredDistance){
   return 100 * (rawDistance - filteredDistance) / rawDistance;
 }
 
+export function calculateDistanceDifference(rawDistance, filteredDistance){
+  if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)) return null;
+  return rawDistance - filteredDistance;
+}
+
 export const DEFAULT_AMBIGUITY_CONFIG = Object.freeze({
   absoluteMargin: 0.04,
   relativeMargin: 0.08
@@ -349,6 +354,8 @@ function pairedDistances(rawEntries, filteredEntries){
   const filteredBySample = new Map(filteredEntries.map(entry => [entry[2], entry[0]]));
   const candidates = new Map();
   for (const [rawDistance, label, sample] of rawEntries){
+    const hasRawReference = sample.components ? !!sample.rh : Array.isArray(sample.r);
+    if (!hasRawReference) continue;
     const filteredDistance = filteredBySample.get(sample);
     if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)) continue;
     const candidate = { sample, rawDistance, filteredDistance };
@@ -377,9 +384,22 @@ function compareStaticFrames(rawFrame, filteredFrame){
 }
 
 function meanDescriptors(descriptors){
+  const meanFace = vectors => {
+    if (!vectors.length) return null;
+    return vectors[0].map((_, index) => {
+      if (vectors[0].length === 32 && (index === 29 || index === 31)){
+        const angles = vectors.map(vector => vector[index] * Math.PI);
+        const sine = angles.reduce((sum, angle) => sum + Math.sin(angle), 0);
+        const cosine = angles.reduce((sum, angle) => sum + Math.cos(angle), 0);
+        return Math.atan2(sine, cosine) / Math.PI;
+      }
+      return vectors.reduce((sum, vector) => sum + vector[index], 0) / vectors.length;
+    });
+  };
   const average = key => {
     const vectors = descriptors.map(item => item[key]).filter(Array.isArray);
     if (!vectors.length) return null;
+    if (key === "face") return meanFace(vectors);
     return vectors[0].map((_, index) =>
       vectors.reduce((sum, vector) => sum + vector[index], 0) / vectors.length);
   };
@@ -653,7 +673,7 @@ function pairedHolisticDistances(frame, kind = "static"){
       rawDistance = holisticDtw(rawSequence, rawReference, sample.components);
       filteredDistance = holisticDtw(filteredSequence, filteredReference, sample.components);
     } else if (!sample.components && kind === "motion"){
-      const rawReference = sample.r || sample.s, filteredReference = sample.s;
+      const rawReference = sample.r, filteredReference = sample.s;
       if (!Array.isArray(frame.rawLegacySequence) || !Array.isArray(frame.filteredLegacySequence) ||
           !Array.isArray(rawReference) || !Array.isArray(filteredReference)) continue;
       rawDistance = dtw(frame.rawLegacySequence, rawReference);
@@ -662,7 +682,7 @@ function pairedHolisticDistances(frame, kind = "static"){
       const side = sample.captureMeta?.handedness || sample.handedness ||
         (rawFrame.hands?.Left ? "Left" : rawFrame.hands?.Right ? "Right" : null);
       if (!side || !rawFrame.hands?.[side] || !filteredFrame.hands?.[side]) continue;
-      const rawReference = sample.r || sample.f, filteredReference = sample.f;
+      const rawReference = sample.r, filteredReference = sample.f;
       if (!Array.isArray(rawReference) || !Array.isArray(filteredReference)) continue;
       rawDistance = dist(features(rawFrame.hands[side], side), rawReference);
       filteredDistance = dist(features(filteredFrame.hands[side], side), filteredReference);

@@ -1,7 +1,8 @@
-export const APP_VIEWS = ["translator", "settings", "edo"];
+export const APP_VIEWS = ["translator", "settings"];
 
 export function resolveAppView(hash){
   const requested = String(hash || "").replace(/^#/, "");
+  if (requested === "edo") return "settings";
   return APP_VIEWS.includes(requested) ? requested : "translator";
 }
 
@@ -16,9 +17,21 @@ export function activateAppView(panels, links, view){
   }
 }
 
-export function mountEdoView(document){
+export function mountEdoContents(document){
   const template = document.getElementById("edoContents");
-  const target = document.querySelector("#edoView .edo-content");
-  if (!template || !target) throw new Error("No se encontró la plantilla de la vista EDO.");
-  target.append(template.content.cloneNode(true));
+  const translator = document.getElementById("translatorView");
+  const settings = document.getElementById("settingsView");
+  const librarySettings = document.getElementById("librarySettings");
+  if (!template || !translator || !settings || !librarySettings){
+    throw new Error("No se encontraron los destinos para la comparación y configuración EDO.");
+  }
+  const content = template.content.cloneNode(true);
+  const comparison = content.querySelector(".workspace-right");
+  const settingsPanels = [...content.querySelectorAll(".edo-settings, .experimental-evaluation")];
+  if (!comparison || settingsPanels.length !== 2){
+    throw new Error("La plantilla EDO no contiene todos los paneles requeridos.");
+  }
+  translator.append(comparison);
+  settings.insertBefore(settingsPanels[0], librarySettings);
+  settings.append(settingsPanels[1]);
 }

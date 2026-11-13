@@ -1,5 +1,11 @@
 import { extractHolisticFeatures } from "./holistic.js";
-import { isRecognitionActive, selectUnifiedPrediction } from "./recognitionState.js";
+import {
+  isCurrentRecognitionResult,
+  isRecognitionActive,
+  recognitionBranch,
+  selectActivePrediction,
+  selectUnifiedPrediction
+} from "./recognitionState.js";
 import { SAMPLE_FORMAT_VERSION } from "./sampleFormat.js";
 import { analyzeUnifiedCapture } from "./unifiedCapture.js";
 
@@ -96,7 +102,7 @@ function startMotion(purpose, label){
   if (purpose === "recognize"){
     state.recognitionEnabled = true;
     state.motion = {
-      purpose, phase: "rec", frames: [], lastEvaluatedAt: 0,
+      purpose, phase: "rec", frames: [], lastEvaluatedAt: 0, lastComparedAt: 0,
       armed: true, unrecognizedSince: 0, segmentActive: false
     };
     refreshButtons();
@@ -144,12 +150,14 @@ function startMotion(purpose, label){
 }
 function recognizeMotion(res){
   const motion = state.motion;
+  const generation = res?.recognitionGeneration ?? state.recognitionGeneration;
+  if (!isCurrentRecognitionResult(state, generation)) return;
   if (!res){
     motion.frames = [];
     motion.lastEvaluatedAt = 0;
     motion.segmentActive = false;
     motion.unrecognizedSince ||= performance.now();
-    ui.stability(null, performance.now());
+    ui.stability(null, performance.now(), generation);
     signEl.textContent = "Esperando una seña";
     signEl.className = "sign idle";
     metaEl.textContent = "";
@@ -170,31 +178,43 @@ function recognizeMotion(res){
     time: res.timestamp
   });
   const aspect = video.videoWidth / video.videoHeight;
-  const staticRaw = classifyFrame(res.rawFrame, "raw", "static");
-  const staticFiltered = classifyFrame(res.filteredFrame, "filtered", "static");
-  const staticMain = state.filterConfig.model === "off" ? staticRaw : staticFiltered;
+  const activeBranch = recognitionBranch(state);
+  const activeFrame = activeBranch === "raw" ? res.rawFrame : res.filteredFrame;
   const evaluationTime = res.timestamp;
   const analysisInterval = motion.armed ? 180 : 100;
+  const comparisonDue = res.timestamp - motion.lastComparedAt >= 200;
+  let staticRaw = null, staticFiltered = null;
+  let staticMain;
+  if (comparisonDue){
+    staticRaw = classifyFrame(res.rawFrame, "raw", "static");
+    staticFiltered = classifyFrame(res.filteredFrame, "filtered", "static");
+    staticMain = selectActivePrediction(staticRaw, staticFiltered, state.recognitionMode);
+  } else {
+    staticMain = classifyFrame(activeFrame, activeBranch, "static");
+  }
   if (res.timestamp - motion.lastEvaluatedAt < analysisInterval){
-    if (!motion.segmentActive) ui.stability(staticMain, evaluationTime);
+    if (!motion.segmentActive) ui.stability(staticMain, evaluationTime, generation);
     return;
   }
   motion.lastEvaluatedAt = res.timestamp;
-  const { rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances } =
-    recognition.pairedHolisticDistances({
-      rawFrame: res.rawFrame,
-      filteredFrame: res.filteredFrame
-    }, "static");
-  const staticReference = $("evaluationReference").value || staticMain?.label;
-  const staticExamples = state.samples.filter(example => example.l === staticReference);
-  updateComparison({
-    kind: "static", detected: true, rawPrediction: staticRaw,
-    filteredPrediction: staticFiltered,
-    rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances,
-    hasReference: staticExamples.length > 0,
-    legacyReference: staticExamples.some(example => !example.components),
-    referenceFilterMismatch: staticExamples.some(recognition.hasFilterReferenceMismatch)
-  });
+  if (comparisonDue){
+    motion.lastComparedAt = res.timestamp;
+    const { rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances } =
+      recognition.pairedHolisticDistances({
+        rawFrame: res.rawFrame,
+        filteredFrame: res.filteredFrame
+      }, "static");
+    const staticReference = $("evaluationReference").value || staticMain?.label;
+    const staticExamples = state.samples.filter(example => example.l === staticReference);
+    updateComparison({
+      kind: "static", detected: true, rawPrediction: staticRaw,
+      filteredPrediction: staticFiltered,
+      rawDistances: staticRawDistances, filteredDistances: staticFilteredDistances,
+      hasReference: staticExamples.length > 0,
+      legacyReference: staticExamples.some(example => !example.components),
+      referenceFilterMismatch: staticExamples.some(recognition.hasFilterReferenceMismatch)
+    });
+  }
 
   if (!motion.armed){
     motion.frames = motion.frames.slice(-10);
@@ -220,13 +240,13 @@ function recognizeMotion(res){
         motion.unrecognizedSince = 0;
       }
     } else motion.unrecognizedSince = 0;
-    ui.stability(staticMain, evaluationTime);
+    ui.stability(staticMain, evaluationTime, generation);
     return;
   }
 
   const frames = motion.frames;
   if (frames.length < 8){
-    ui.stability(staticMain, evaluationTime);
+    ui.stability(staticMain, evaluationTime, generation);
     return;
   }
   const rawFrames = frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
@@ -275,7 +295,7 @@ function recognizeMotion(res){
       }
       const rawMotion = classifyFrame(query, "raw", "motion");
       const filteredMotion = classifyFrame(query, "filtered", "motion");
-      const motionMain = state.filterConfig.model === "off" ? rawMotion : filteredMotion;
+      const motionMain = selectActivePrediction(rawMotion, filteredMotion, state.recognitionMode);
       const selected = selectUnifiedPrediction(staticMain, motionMain);
       const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
       const reference = $("evaluationReference").value || selected?.label;
@@ -288,13 +308,14 @@ function recognizeMotion(res){
         referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
       });
       if (selected?.reason === "ambiguous"){
-        ui.stability(selected, evaluationTime);
+        ui.stability(selected, evaluationTime, generation);
       } else if (selected?.label){
+        if (!isCurrentRecognitionResult(state, generation)) return;
         state.committed = selected.label;
         const score = selected.conf == null ? "" :
           ` · Puntuación del reconocedor: ${Math.round(selected.conf * 100)}% (no es probabilidad validada)`;
         showLocked(selected.label, `${selected.src || "seña guardada"}${score}`, true);
-        addToPhrase(selected.label);
+        addToPhrase(selected.label, generation);
       } else {
         signEl.textContent = "Movimiento completo sin coincidencia";
         signEl.className = "sign idle";
@@ -319,7 +340,7 @@ function recognizeMotion(res){
   while (motion.frames.length > 8 && motion.frames[1].time < cutoff){
     motion.frames.shift();
   }
-  ui.stability(staticMain, evaluationTime);
+  ui.stability(staticMain, evaluationTime, generation);
   if (performance.now() >= state.readoutLock){
     signEl.textContent = staticMain?.label || "Esperando una seña";
     signEl.className = staticMain?.label ? "sign" : "sign idle";
@@ -594,6 +615,14 @@ function resetTracking(){
     setNote("Mano o rostro requerido fuera de cámara");
   }
 }
+function resetRecognitionMode(){
+  if (state.recognitionEnabled){
+    signEl.textContent = "Reconocimiento activo";
+    signEl.className = "sign idle";
+    metaEl.textContent = "Esperando una seña en el modo seleccionado.";
+  }
+  holdBar.style.width = "0";
+}
 $("btnTrain").onclick = () => {
   if (!state.ready || state.motion || state.capState) return;
   const label = $("label").value.trim();
@@ -653,5 +682,8 @@ document.addEventListener("keydown", e => {
 });
 
 
-return { startMotion, tickMotion, capture, refreshKind, refreshButtons, resetTracking };
+return {
+  startMotion, tickMotion, capture, refreshKind, refreshButtons, resetTracking,
+  resetRecognitionMode
+};
 }

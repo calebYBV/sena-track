@@ -8,7 +8,7 @@ import { DEFAULT_FILTER_CONFIG, normalizeFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 import {
   activateAppView,
-  mountEdoView,
+  mountEdoContents,
   resolveAppView
 } from "./navigation.js";
 
@@ -18,6 +18,7 @@ const state = {
   readoutLock: 0, cand: null, candCount: 0, candSince: null,
   committed: null, noHand: 0, noHandSince: null, neutralSince: null,
   ready: false, userId: null, filterConfig: { ...DEFAULT_FILTER_CONFIG },
+  recognitionMode: "edo", recognitionGeneration: 0,
   ambiguityConfig: normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG),
   recognitionEnabled: false,
   recognitionTimers: new Set(),
@@ -25,7 +26,7 @@ const state = {
   lastRecognitionAt: 0
 };
 const $ = id => document.getElementById(id);
-mountEdoView(document);
+mountEdoContents(document);
 const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
 const statusEl = $("status"), signEl = $("sign"), metaEl = $("meta"), holdBar = $("holdBar");
 const phraseEl = $("phrase"), listEl = $("list"), trainBar = $("trainBar"), noteEl = $("note");
@@ -48,11 +49,18 @@ ui.refreshReferences();
 ui.refreshFilterControls();
 const training = createTraining({ state, dom, ui, storage, recognition });
 const camera = createCamera({ state, dom, ui, training, recognition });
+state.onRecognitionModeChange = () => {
+  training.resetRecognitionMode();
+  camera.resetRecognitionMode();
+};
 function initializeNavigation(){
   const panels = [...document.querySelectorAll("[data-view-panel]")];
   const links = [...document.querySelectorAll(".quick-links [data-view]")];
   let currentView = null;
   const navigate = (view, focus = false) => {
+    if (window.location.hash === "#edo"){
+      window.history.replaceState(window.history.state, "", "#settings");
+    }
     if (view === currentView) return;
     const previousView = currentView;
     currentView = view;
