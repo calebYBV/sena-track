@@ -381,7 +381,7 @@ function renderComparison(){
       ? "Comparación no disponible para esta referencia."
       : "Guarda ejemplos de esta seña para calcular la comparación.";
     $("comparisonNote").textContent = result.referenceFilterMismatch
-      ? "La referencia heredada no conserva datos raw pareados suficientes para regenerar ambas ramas."
+      ? "La referencia heredada no conserva coordenadas raw pareadas. Se conserva por compatibilidad, pero su uso en Solo MediaPipe no es una comparación raw verificable."
       : requested
       ? "No hay ejemplos guardados de la seña seleccionada en esta modalidad."
       : "La candidata no confirma la intención del usuario.";
@@ -417,7 +417,7 @@ function renderComparison(){
     notes.push("La referencia incluye ejemplos heredados de manos sin datos faciales; vuelve a capturarlos si quieres añadir rostro o ambas manos.");
   }
   if (result.referenceFilterMismatch){
-    notes.push("Algunas referencias heredadas no conservan cuadros raw suficientes para regenerar sus características con el filtro actual; su comparación EDO puede no estar alineada.");
+    notes.push("Algunas referencias heredadas no conservan coordenadas raw pareadas; se mantienen por compatibilidad, pero Solo MediaPipe puede usar su descriptor guardado de procesamiento histórico desconocido. No son referencias raw verificables ni comparaciones experimentales justas; vuelve a capturarlas para emparejarlas.");
   }
   notes.push("Una reducción de distancia no garantiza un reconocimiento correcto.");
   $("comparisonNote").textContent = notes.join(" ");

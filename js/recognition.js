@@ -128,8 +128,10 @@ function hasFilterReferenceMismatch(sample){
 function sampleReference(sample, branch, kind = "static"){
   if (branch === "raw") return kind === "motion"
     ? sample.rawHolisticSequence : sample.rh;
-  return filteredReferences.get(sample)?.[kind] ||
-    (kind === "motion" ? sample.filteredHolisticSequence : sample.h);
+  const regenerated = filteredReferences.get(sample)?.[kind];
+  if (canReplayReference(sample)) return regenerated || null;
+  return regenerated || (kind === "motion"
+    ? sample.filteredHolisticSequence : sample.h);
 }
 
 function classifyCandidates(entries, threshold, ambiguityConfig = state.ambiguityConfig){

@@ -83,6 +83,14 @@ test("EDO frame work is skipped in idle Solo MediaPipe mode unless comparison is
   assert.equal(shouldProcessEdo(state), true);
 });
 
+test("Solo MediaPipe always selects the raw prediction regardless of the EDO result", () => {
+  const raw = { label: "MediaPipe" };
+  const filtered = { label: "EDO" };
+  assert.equal(selectActivePrediction(raw, filtered, "mediapipe"), raw);
+  assert.equal(selectActivePrediction(raw, null, "mediapipe"), raw);
+  assert.equal(selectActivePrediction(raw, filtered, "edo"), filtered);
+});
+
 test("stale recognition generations cannot append words after a mode switch", () => {
   const state = {
     recognitionEnabled: true,
