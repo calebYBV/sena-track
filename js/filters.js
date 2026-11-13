@@ -24,6 +24,10 @@ export function normalizeFilterConfig(config){
 
 const cloneLandmarks = points => points.map(({ x, y, z }) => ({ x, y, z }));
 const finite = value => Number.isFinite(value);
+const HEAD_ANGLE_FEATURES = new Set([29, 31]);
+const wrapHeadAngle = value => ((value + 1) % 2 + 2) % 2 - 1;
+const nearestHeadAngle = (value, reference) =>
+  reference + ((value - reference + 1) % 2 + 2) % 2 - 1;
 const validFilterConfig = config =>
   config && ["off", "first", "second"].includes(config.model) &&
   finite(config.tau) && config.tau >= 0.01 && config.tau <= 0.3 &&
@@ -117,7 +121,15 @@ export function createEdoFilter(){
       return cloneLandmarks(points);
     }
     if (timestamp === track.timestamp){
-      return track.points.map(point => ({ x: point.x.y, y: point.y.y, z: point.z.y }));
+      return track.points.map((point, index) => {
+        const x = point.x.y;
+        return {
+          x: identity === "face:features" && HEAD_ANGLE_FEATURES.has(index)
+            ? wrapHeadAngle(x) : x,
+          y: point.y.y,
+          z: point.z.y
+        };
+      });
     }
     if (points.length !== track.points.length){
       tracks.delete(identity);
@@ -133,7 +145,9 @@ export function createEdoFilter(){
       const previous = track.points[index];
       const next = {};
       for (const axis of ["x", "y", "z"]){
-        const input = point[axis];
+        const input = identity === "face:features" && axis === "x" &&
+          HEAD_ANGLE_FEATURES.has(index)
+          ? nearestHeadAngle(point.x, previous.x.y) : point[axis];
         if (!finite(input)) throw new TypeError("MediaPipe devolvió una coordenada no finita.");
         const value = previous[axis];
         if (config.model === "first"){
@@ -158,7 +172,15 @@ export function createEdoFilter(){
     });
     track.points = filtered;
     track.timestamp = timestamp;
-    return filtered.map(point => ({ x: point.x.y, y: point.y.y, z: point.z.y }));
+    return filtered.map((point, index) => {
+      const x = point.x.y;
+      return {
+        x: identity === "face:features" && HEAD_ANGLE_FEATURES.has(index)
+          ? wrapHeadAngle(x) : x,
+        y: point.y.y,
+        z: point.z.y
+      };
+    });
   }
 
   function retain(identities){

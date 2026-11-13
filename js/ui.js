@@ -1,9 +1,14 @@
 import {
-  calculateDistanceReduction,
+  calculateDistanceDifference,
   DEFAULT_AMBIGUITY_CONFIG,
   normalizeAmbiguityConfig
 } from "./recognition.js";
-import { shouldAutoAppendPhrase } from "./recognitionState.js";
+import {
+  isCurrentRecognitionResult,
+  resetRecognitionForModeChange,
+  selectActivePrediction,
+  shouldAutoAppendPhrase
+} from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
@@ -17,7 +22,8 @@ function setSyncStatus(text, status = "saved"){
   $("syncRetry").hidden = status !== "error" && status !== "pending";
 }
 
-function stability(r, timestamp = performance.now()){
+function stability(r, timestamp = performance.now(), generation = state.recognitionGeneration){
+  if (!isCurrentRecognitionResult(state, generation)) return;
   if (!state.recognitionEnabled) return;
   state.noHand = 0;
   state.noHandSince = null;
@@ -70,8 +76,8 @@ function lostHand(timestamp = performance.now()){
   holdBar.style.width = "0";
   return false;
 }
-function addToPhrase(label){
-  if (!shouldAutoAppendPhrase(state, label, performance.now())) return;
+function addToPhrase(label, generation = state.recognitionGeneration){
+  if (!shouldAutoAppendPhrase(state, label, performance.now(), generation)) return false;
   const normalized = String(label).trim();
   if (normalized.length === 1) state.phrase += normalized;
   else state.phrase += (state.phrase && !state.phrase.endsWith(" ") ? " " : "") + normalized + " ";
@@ -80,6 +86,7 @@ function addToPhrase(label){
       document.querySelector('input[name="speechMode"]:checked')?.value === "automatic"){
     speakText(normalized);
   }
+  return true;
 }
 
 function speakText(text){
@@ -194,20 +201,20 @@ function refreshFilterControls(){
   $("omegaControl").hidden = config.model !== "second";
   $("firstEquation").hidden = config.model !== "first";
   $("secondEquation").hidden = config.model !== "second";
-  $("offDescription").hidden = config.model !== "off";
+  $("offDescription").hidden = true;
   $("firstCalculation").hidden = config.model !== "first";
   $("secondCalculation").hidden = config.model !== "second";
-  $("offCalculation").hidden = config.model !== "off";
   $("activeModelName").textContent = config.model === "first" ? "Filtro de primer orden" :
-    config.model === "second" ? "Modelo de segundo orden amortiguado" : "Filtro EDO desactivado";
+    "Modelo de segundo orden amortiguado";
   $("settingsModelName").textContent = $("activeModelName").textContent;
   $("filterModelDescription").textContent = config.model === "first"
     ? "Acerca gradualmente las coordenadas filtradas a las mediciones de MediaPipe para reducir vibraciones y saltos."
-    : config.model === "second"
-      ? "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones."
-      : "Desactivado: coordenadas directas de MediaPipe, sin filtro adicional de la aplicación.";
-  $("rawBranchLabel").textContent = "Sin EDO";
-  $("filteredBranchLabel").textContent = config.model === "off" ? "Con EDO (desactivado)" : "Con EDO";
+    : "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones.";
+  $("rawBranchLabel").textContent = "Solo MediaPipe";
+  $("filteredBranchLabel").textContent = "EDO";
+  $("compareVisualLabel").textContent = state.recognitionMode === "mediapipe"
+    ? "Mostrar puntos EDO comparados"
+    : "Mostrar puntos originales de MediaPipe";
 }
 for (const [id, key] of filterControls){
   const update = persist => {
@@ -263,11 +270,46 @@ function refreshReferences(){
 $("evaluationReference").addEventListener("change", renderComparison);
 refreshFilterControls();
 
+function refreshRecognitionMode(){
+  const mediapipe = state.recognitionMode === "mediapipe";
+  $("recognitionModeEdo").checked = !mediapipe;
+  $("recognitionModeMediaPipe").checked = mediapipe;
+  $("activeRecognitionMode").textContent = mediapipe
+    ? "Solo MediaPipe controla el reconocimiento"
+    : "EDO controla el reconocimiento";
+  $("compareVisualLabel").textContent = mediapipe
+    ? "Mostrar puntos EDO comparados"
+    : "Mostrar puntos originales de MediaPipe";
+}
+function setRecognitionMode(mode){
+  if (!resetRecognitionForModeChange(state, mode)){
+    refreshRecognitionMode();
+    return false;
+  }
+  refreshRecognitionMode();
+  state.onRecognitionModeChange?.(mode);
+  updateComparison({
+    detected: false,
+    reason: "Modo cambiado; esperando una nueva comparación con los mismos cuadros raw/EDO."
+  });
+  return true;
+}
+for (const id of ["recognitionModeEdo", "recognitionModeMediaPipe"]){
+  $(id).addEventListener("change", () => {
+    if (!$(id).checked) return;
+    const mode = id === "recognitionModeMediaPipe" ? "mediapipe" : "edo";
+    setRecognitionMode(mode);
+  });
+}
+refreshRecognitionMode();
+
 function setEvaluationEnabled(enabled){
   const panel = $("evaluationPanel");
   panel.classList.toggle("is-disabled", !enabled);
   panel.setAttribute("aria-disabled", String(!enabled));
   $("evaluationReference").disabled = !enabled;
+  $("recognitionModeEdo").disabled = !enabled;
+  $("recognitionModeMediaPipe").disabled = !enabled;
   $("compareVisual").disabled = !enabled;
   for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
   if (!enabled){
@@ -299,7 +341,7 @@ function renderComparison(){
   const result = lastComparison;
   const reductionReadout = $("distanceReduction").parentElement;
   reductionReadout.classList.remove("is-positive", "is-negative", "is-neutral");
-  reductionReadout.setAttribute("aria-label", "Reducción de distancia no disponible");
+  reductionReadout.setAttribute("aria-label", "Diferencia de distancia no disponible");
   $("rawPrediction").textContent = predictionText(result?.rawPrediction);
   $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
   $("rawDistance").textContent = "—";
@@ -308,8 +350,8 @@ function renderComparison(){
   if (!result?.detected){
     const requested = $("evaluationReference").value;
     $("referenceLabel").textContent = requested ? `Seña seleccionada: ${requested}` : "Referencia candidata: uso libre";
-    $("comparisonStatus").textContent = "Muestra las partes requeridas para comparar.";
-    $("comparisonNote").textContent = "La salida sin EDO es la de MediaPipe y puede incluir procesamiento interno.";
+    $("comparisonStatus").textContent = result?.reason || "Muestra las partes requeridas para comparar.";
+    $("comparisonNote").textContent = "La comparación experimental se actualiza durante el reconocimiento activo; MediaPipe puede incluir procesamiento interno.";
     return;
   }
   if (result.reason){
@@ -318,7 +360,8 @@ function renderComparison(){
     return;
   }
   const requested = $("evaluationReference").value;
-  const mainPrediction = state.filterConfig.model === "off" ? result.rawPrediction : result.filteredPrediction;
+  const mainPrediction = selectActivePrediction(
+    result.rawPrediction, result.filteredPrediction, state.recognitionMode);
   const reference = requested || mainPrediction?.label ||
     result.filteredPrediction?.label || result.rawPrediction?.label;
   $("referenceLabel").textContent = requested
@@ -334,31 +377,37 @@ function renderComparison(){
   if (Number.isFinite(rawDistance)) $("rawDistance").textContent = rawDistance.toFixed(4);
   if (Number.isFinite(filteredDistance)) $("filteredDistance").textContent = filteredDistance.toFixed(4);
   if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)){
-    $("comparisonStatus").textContent = "Guarda ejemplos de esta seña para calcular la comparación.";
-    $("comparisonNote").textContent = requested
+    $("comparisonStatus").textContent = result.referenceFilterMismatch
+      ? "Comparación no disponible para esta referencia."
+      : "Guarda ejemplos de esta seña para calcular la comparación.";
+    $("comparisonNote").textContent = result.referenceFilterMismatch
+      ? "La referencia heredada no conserva datos raw pareados suficientes para regenerar ambas ramas."
+      : requested
       ? "No hay ejemplos guardados de la seña seleccionada en esta modalidad."
       : "La candidata no confirma la intención del usuario.";
     return;
   }
-  const reduction = calculateDistanceReduction(rawDistance, filteredDistance);
-  if (reduction === null){
+  const difference = calculateDistanceDifference(rawDistance, filteredDistance);
+  if (difference === null){
     $("distanceReduction").textContent = "No disponible";
     reductionReadout.classList.add("is-neutral");
-    reductionReadout.setAttribute("aria-label", "Reducción de distancia no disponible");
-    $("comparisonStatus").textContent = "La comparación no está disponible: la distancia sin EDO es prácticamente cero.";
+    reductionReadout.setAttribute("aria-label", "Diferencia de distancia no disponible");
+    $("comparisonStatus").textContent = "Comparación no disponible.";
   } else {
-    $("distanceReduction").textContent = `${reduction.toFixed(1)}%`;
-    reductionReadout.classList.add(reduction > 0 ? "is-positive" : reduction < 0 ? "is-negative" : "is-neutral");
-    reductionReadout.setAttribute("aria-label", reduction > 0
-      ? `EDO acercó a la referencia: ${reduction.toFixed(1)} por ciento`
-      : reduction < 0
-        ? `EDO alejó de la referencia: ${reduction.toFixed(1)} por ciento`
-        : "EDO no cambió la distancia a la referencia");
-    $("comparisonStatus").textContent = reduction > 0 ? "EDO acercó a la referencia" :
-      reduction < 0 ? "EDO alejó de la referencia" : "EDO no cambió la distancia";
+    $("distanceReduction").textContent =
+      `${difference > 0 ? "+" : ""}${difference.toFixed(4)} unidades`;
+    reductionReadout.classList.add(difference > 0 ? "is-positive" : difference < 0 ? "is-negative" : "is-neutral");
+    reductionReadout.setAttribute("aria-label", difference > 0
+      ? `La distancia EDO es menor en ${difference.toFixed(4)} unidades`
+      : difference < 0
+        ? `La distancia EDO es mayor en ${Math.abs(difference).toFixed(4)} unidades`
+        : "Las distancias son iguales");
+    $("comparisonStatus").textContent = difference > 0 ? "EDO quedó más cerca de esta referencia" :
+      difference < 0 ? "EDO quedó más lejos de esta referencia" : "Las distancias son iguales";
   }
   const notes = [];
-  notes.push("Raw y EDO se comparan con el mismo ejemplo guardado; el color indica distancia, no un acierto validado.");
+  notes.push(`${state.recognitionMode === "mediapipe" ? "Solo MediaPipe" : "EDO"} controla el reconocimiento.`);
+  notes.push("Ambas ramas usan el mismo cuadro y el mismo ejemplo guardado; la distancia no mide exactitud.");
   if (!requested) notes.push("La candidata no confirma la intención del usuario.");
   if (!requested && result.rawPrediction?.label && result.filteredPrediction?.label &&
       result.rawPrediction.label !== result.filteredPrediction.label){
@@ -447,5 +496,6 @@ function showNoHand(){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
+  refreshRecognitionMode, setRecognitionMode,
   setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
 }

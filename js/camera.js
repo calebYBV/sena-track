@@ -1,6 +1,12 @@
 import { HandLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 import { createEdoFilter, calculateVibrationReduction, estimateTrackingLag } from "./filters.js";
 import { extractFaceFeatures } from "./holistic.js";
+import {
+  isCurrentRecognitionResult,
+  recognitionBranch,
+  selectActivePrediction,
+  shouldProcessEdo
+} from "./recognitionState.js";
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
@@ -17,6 +23,10 @@ let started = false, frameId = null, startToken = 0, missingFrames = 0;
 let lastFrameError = null;
 let activeHand = null, lastTime = -1;
 const edo = createEdoFilter();
+let lastComparisonAt = -Infinity;
+let lastTrackingMetricUpdateAt = -Infinity;
+let trackingDiagnosticsActive = false;
+let lastTrackingMetricNote = null;
 let previousMeasurement = null;
 let quietMeasurements = [];
 let movingMeasurements = [];
@@ -32,6 +42,8 @@ function stepDisplacement(previous, current, aspect, palmSize){
 }
 
 function updateTrackingDiagnostics(raw, filtered, timestamp){
+  trackingDiagnosticsActive = true;
+  lastTrackingMetricNote = null;
   const aspect = video.videoWidth / video.videoHeight;
   const palmSize = Math.max(0.01, Math.hypot(
     (raw[9].x - raw[0].x) * aspect, raw[9].y - raw[0].y
@@ -58,6 +70,8 @@ function updateTrackingDiagnostics(raw, filtered, timestamp){
     filtered: filtered.map(point => ({ x: point.x, y: point.y })),
     time: timestamp
   };
+  if (timestamp - lastTrackingMetricUpdateAt < 200) return;
+  lastTrackingMetricUpdateAt = timestamp;
   const hasQuietRun = quietMeasurements.length >= 15;
   const rawVibration = hasQuietRun
     ? Math.sqrt(quietMeasurements.reduce((sum, item) => sum + item.raw ** 2, 0) / quietMeasurements.length) : null;
@@ -71,13 +85,17 @@ function updateTrackingDiagnostics(raw, filtered, timestamp){
   });
 }
 
-function resetTrackingDiagnostics(){
+function resetTrackingDiagnostics(note = "Métricas reiniciadas al perder la mano o iniciar una captura."){
   previousMeasurement = null;
   quietMeasurements = [];
   movingMeasurements = [];
+  lastTrackingMetricUpdateAt = -Infinity;
+  if (!trackingDiagnosticsActive && lastTrackingMetricNote === note) return;
+  trackingDiagnosticsActive = false;
+  lastTrackingMetricNote = note;
   updateTrackingMetrics({
     rawVibration: null, filteredVibration: null, vibrationReduction: null, lagMs: null,
-    note: "Métricas reiniciadas al perder la mano o iniciar una captura."
+    note
   });
 }
 
@@ -120,7 +138,7 @@ function stop(){
   if (frameId !== null) cancelAnimationFrame(frameId);
   frameId = null;
   releaseMedia();
-  resetTrackingDiagnostics();
+  resetTrackingDiagnostics("Cámara inactiva; datos de seguimiento no disponibles.");
   setEvaluationEnabled(true);
   if (interruptedCapture) setNote("Captura cancelada al salir del Traductor; no se guardó.");
   refreshButtons();
@@ -133,37 +151,47 @@ function stop(){
 
 function resetFilters(){
   edo.reset();
-  resetTrackingDiagnostics();
+  lastComparisonAt = -Infinity;
+  resetTrackingDiagnostics("Métricas reiniciadas por cambio de filtro.");
 }
 
 function resetFilterHistory(){
   edo.reset();
-  resetTrackingDiagnostics();
+  lastComparisonAt = -Infinity;
+  resetTrackingDiagnostics("Métricas reiniciadas al comenzar una captura.");
+}
+
+function resetRecognitionMode(){
+  edo.reset();
+  lastComparisonAt = -Infinity;
+  resetTrackingDiagnostics("Métricas reiniciadas al cambiar rama de reconocimiento.");
 }
 
 window.addEventListener("pagehide", stop);
 
-function drawFace(timestamp, activeIdentities){
+function drawFace(timestamp, activeIdentities, branch, processEdo){
   if (!faceLandmarker) return null;
   const result = faceLandmarker.detectForVideo(video, timestamp);
   if (!result.faceLandmarks.length) return null;
   const raw = result.faceLandmarks[0].map(({ x, y, z }) => ({ x, y, z }));
-  const filtered = edo.process(raw, "face", timestamp, state.filterConfig);
+  const filtered = processEdo ? edo.process(raw, "face", timestamp, state.filterConfig) : raw;
   activeIdentities.push("face");
-  drawing.drawConnectors(filtered, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
+  const activeLandmarks = branch === "raw" ? raw : filtered;
+  const comparisonLandmarks = branch === "raw" ? filtered : raw;
+  drawing.drawConnectors(activeLandmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
   if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
-    drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
+    drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
   }
   const matrixData = result.facialTransformationMatrixes?.[0]?.data;
   const matrix = matrixData ? Array.from(matrixData) : null;
   const blendshapes = result.faceBlendshapes?.[0]?.categories;
   const rawFeatures = extractFaceFeatures(raw, blendshapes, matrix,
     video.videoWidth / video.videoHeight);
-  const filteredFeatures = rawFeatures
+  const filteredFeatures = rawFeatures && processEdo
     ? edo.process(rawFeatures.map(value => ({ x: value, y: 0, z: 0 })),
       "face:features", timestamp, state.filterConfig).map(point => point.x)
-    : null;
-  if (filteredFeatures) activeIdentities.push("face:features");
+    : rawFeatures;
+  if (filteredFeatures && processEdo) activeIdentities.push("face:features");
   return { rawLandmarks: raw, filteredLandmarks: filtered,
     rawFeatures, filteredFeatures };
 }
@@ -177,6 +205,7 @@ function chooseHand(results){
     const next = identities[index];
     if (activeHand !== null && activeHand !== next){
       state.cand = null; state.candCount = 0; state.committed = null; state.noHand = 0;
+      resetTrackingDiagnostics("Métricas reiniciadas al cambiar la mano seguida.");
       const recording = !!(state.motion || state.capState);
       resetTracking();
       if (recording) setNote(state.motion?.purpose === "recognize"
@@ -189,13 +218,23 @@ function chooseHand(results){
   return index;
 }
 
-function compareStatic(track){
+function compareStatic(track, timestamp){
   const rawFrame = track.rawFrame;
   const filteredFrame = track.filteredFrame;
+  if (timestamp - lastComparisonAt < 200){
+    const branch = recognitionBranch(state);
+    const prediction = recognition.classifyFrame(
+      branch === "raw" ? rawFrame : filteredFrame, branch, "static");
+    return branch === "raw"
+      ? { rawPrediction: prediction, filteredPrediction: null }
+      : { rawPrediction: null, filteredPrediction: prediction };
+  }
+  lastComparisonAt = timestamp;
   const { rawPrediction, filteredPrediction, rawDistances, filteredDistances } =
     compareStaticFrames(rawFrame, filteredFrame);
   const requested = $("evaluationReference").value;
-  const mainPrediction = state.filterConfig.model === "off" ? rawPrediction : filteredPrediction;
+  const mainPrediction = selectActivePrediction(
+    rawPrediction, filteredPrediction, state.recognitionMode);
   const reference = requested || mainPrediction?.label;
   const examples = state.samples.filter(sample => sample.l === reference);
   updateComparison({
@@ -211,6 +250,9 @@ function compareStatic(track){
 function processFrame(){
   if (video.readyState >= 2 && video.currentTime !== lastTime){
     const timestamp = performance.now();
+    const recognitionGeneration = state.recognitionGeneration;
+    const activeBranch = recognitionBranch(state);
+    const processEdo = shouldProcessEdo(state);
     const results = landmarker.detectForVideo(video, timestamp);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const activeIdentities = [];
@@ -221,12 +263,14 @@ function processFrame(){
       const identity = `hand:${side}`;
       activeIdentities.push(identity);
       const rawLandmarks = results.landmarks[index].map(({ x, y, z }) => ({ x, y, z }));
-      const filteredLandmarks = edo.process(rawLandmarks, identity, timestamp, state.filterConfig);
+      const filteredLandmarks = processEdo
+        ? edo.process(rawLandmarks, identity, timestamp, state.filterConfig)
+        : rawLandmarks;
       handTracks[side] = { hand: side, rawLandmarks, filteredLandmarks };
     });
     const selectedIndex = chooseHand(results);
     const selected = selectedIndex === null ? null : handTracks[results.handedness[selectedIndex][0].categoryName];
-    const face = drawFace(timestamp, activeIdentities);
+    const face = drawFace(timestamp, activeIdentities, activeBranch, processEdo);
     const rawFrame = {
       hands: Object.fromEntries(Object.entries(handTracks).map(([side, track]) => [side, track.rawLandmarks])),
       faceLandmarks: face?.rawLandmarks,
@@ -263,56 +307,57 @@ function processFrame(){
     if (selected || face){
       missingFrames = 0;
       for (const track of Object.values(handTracks)){
-        drawing.drawConnectors(track.filteredLandmarks, HandLandmarker.HAND_CONNECTIONS, { color: "#86e750", lineWidth: 4 });
-        drawing.drawLandmarks(track.filteredLandmarks, { color: "#ffffff", fillColor: "#0c71c6", radius: 4, lineWidth: 2 });
+        const activeLandmarks = activeBranch === "raw"
+          ? track.rawLandmarks : track.filteredLandmarks;
+        const comparisonLandmarks = activeBranch === "raw"
+          ? track.filteredLandmarks : track.rawLandmarks;
+        drawing.drawConnectors(activeLandmarks, HandLandmarker.HAND_CONNECTIONS, { color: "#86e750", lineWidth: 4 });
+        drawing.drawLandmarks(activeLandmarks, { color: "#ffffff", fillColor: "#0c71c6", radius: 4, lineWidth: 2 });
         if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
-          drawing.drawLandmarks(track.rawLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 2, lineWidth: 1 });
+          drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 2, lineWidth: 1 });
         }
       }
       if (state.motion){
+        if (state.motion.purpose === "recognize"){
+          if (selected) updateTrackingDiagnostics(
+            selected.rawLandmarks, selected.filteredLandmarks, timestamp);
+          else resetTrackingDiagnostics(
+            "No disponible: vibración y retraso requieren una mano detectada.");
+        }
         tickMotion({
           rawFrame, filteredFrame, presence,
           rawLandmarks: selected?.rawLandmarks, filteredLandmarks: selected?.filteredLandmarks,
           hand: selected?.hand,
           timestamp,
+          recognitionGeneration,
           handCount: results.landmarks.length,
           faceAvailable: presence.face
         });
       } else if (!isCapturing && state.recognitionEnabled){
         if (selected){
           updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
-          const predictions = compareStatic({
-            ...selected, rawFrame, filteredFrame
-          });
-          const mainPrediction = state.filterConfig.model === "off"
-            ? predictions.rawPrediction : predictions.filteredPrediction;
-          if (!mainPrediction?.label && requiredMissing){
-            $("sign").textContent = "Mano o rostro requerido fuera de cámara";
-            $("sign").className = "sign idle";
-            $("meta").textContent = "";
-            state.cand = null; state.candCount = 0; state.committed = null;
-            holdBar.style.width = "0";
-            updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
-            edo.retain(activeIdentities);
-            lastTime = video.currentTime;
-            return;
-          }
-          show(mainPrediction); stability(mainPrediction);
         } else {
-          const predictions = compareStatic({ rawFrame, filteredFrame });
-          const mainPrediction = state.filterConfig.model === "off"
-            ? predictions.rawPrediction : predictions.filteredPrediction;
-          if (!mainPrediction?.label && requiredMissing){
-            $("sign").textContent = "Mano o rostro requerido fuera de cámara";
-            $("sign").className = "sign idle";
-            $("meta").textContent = "";
-            state.cand = null; state.candCount = 0; state.committed = null;
-            holdBar.style.width = "0";
-            updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
-          } else {
-            show(mainPrediction);
-            stability(mainPrediction);
-          }
+          resetTrackingDiagnostics("No disponible: vibración y retraso requieren una mano detectada.");
+        }
+        const predictions = compareStatic({
+          ...selected, rawFrame, filteredFrame
+        }, timestamp);
+        const mainPrediction = selectActivePrediction(
+          predictions.rawPrediction, predictions.filteredPrediction, state.recognitionMode);
+        if (!mainPrediction?.label && requiredMissing){
+          $("sign").textContent = "Mano o rostro requerido fuera de cámara";
+          $("sign").className = "sign idle";
+          $("meta").textContent = "";
+          state.cand = null; state.candCount = 0; state.committed = null;
+          holdBar.style.width = "0";
+          updateComparison({ detected: false, reason: "Mano o rostro requerido fuera de cámara" });
+          edo.retain(activeIdentities);
+          lastTime = video.currentTime;
+          return;
+        }
+        if (isCurrentRecognitionResult(state, recognitionGeneration)){
+          show(mainPrediction);
+          stability(mainPrediction, timestamp, recognitionGeneration);
         }
       } else if (!isCapturing){
         $("sign").textContent = "Reconocimiento detenido";
@@ -474,5 +519,5 @@ async function start(){
   frameId = requestAnimationFrame(loop);
 }
 
-return { start, stop, resetFilters, resetFilterHistory };
+return { start, stop, resetFilters, resetFilterHistory, resetRecognitionMode };
 }

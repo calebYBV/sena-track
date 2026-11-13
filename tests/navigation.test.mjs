@@ -1,25 +1,37 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { activateAppView, resolveAppView } from "../js/navigation.js";
 
 test("view routing uses the translator by default and supports browser history hashes", () => {
   assert.equal(resolveAppView(""), "translator");
   assert.equal(resolveAppView("#settings"), "settings");
-  assert.equal(resolveAppView("#edo"), "edo");
+  assert.equal(resolveAppView("#edo"), "settings");
   assert.equal(resolveAppView("#unknown"), "translator");
 });
 
 test("view activation exposes one panel and marks its navigation item", () => {
-  const panels = ["translator", "settings", "edo"].map(name => ({
+  const panels = ["translator", "settings"].map(name => ({
     dataset: { viewPanel: name }, hidden: true
   }));
-  const links = ["translator", "settings", "edo"].map(name => ({
+  const links = ["translator", "settings"].map(name => ({
     dataset: { view: name }, attributes: {},
     setAttribute(key, value){ this.attributes[key] = value; },
     removeAttribute(key){ delete this.attributes[key]; }
   }));
-  activateAppView(panels, links, "edo");
-  assert.deepEqual(panels.map(panel => panel.hidden), [true, true, false]);
+  activateAppView(panels, links, "settings");
+  assert.deepEqual(panels.map(panel => panel.hidden), [true, false]);
   assert.deepEqual(links.map(link => link.attributes["aria-current"] || null),
-    [null, null, "page"]);
+    [null, "page"]);
+});
+
+test("the interface has only translator and settings views with comparison controls", async () => {
+  const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
+  const views = [...html.matchAll(/data-view-panel="([^"]+)"/g)].map(match => match[1]);
+  const navigationViews = [...html.matchAll(/data-view="([^"]+)"/g)].map(match => match[1]);
+  assert.deepEqual(views, ["translator", "settings"]);
+  assert.deepEqual(navigationViews, ["translator", "settings"]);
+  assert.match(html, /recognitionModeEdo/);
+  assert.match(html, /recognitionModeMediaPipe/);
+  assert.match(html, /id="edoContents"/);
 });

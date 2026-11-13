@@ -91,6 +91,20 @@ test("a repeated timestamp does not advance filter state twice", () => {
   assert.deepEqual(repeated, first);
 });
 
+test("face yaw and roll follow the shortest path across the circular boundary", () => {
+  const filter = createEdoFilter();
+  const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.1 };
+  const features = value => Array.from({ length: 32 }, (_, index) => ({
+    x: index === 29 || index === 31 ? value : 0,
+    y: 0,
+    z: 0
+  }));
+  filter.process(features(0.99), "face:features", 0, config);
+  const output = filter.process(features(-0.99), "face:features", 30, config);
+  assert.ok(output[29].x > 0.9 || output[29].x < -0.9);
+  assert.ok(output[31].x > 0.9 || output[31].x < -0.9);
+});
+
 test("vibration reduction preserves improvements, regressions, and non-calculable baselines", () => {
   assert.ok(Math.abs(calculateVibrationReduction(0.1, 0.07) - 30) < 1e-9);
   assert.ok(Math.abs(calculateVibrationReduction(0.1, 0.12) + 20) < 1e-9);

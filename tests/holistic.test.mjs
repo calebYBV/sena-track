@@ -68,6 +68,17 @@ test("face data does not affect a hand-only sign, but facial signs compare expre
   assert.equal(extractHolisticFeatures(holisticFrame({ faceAvailable: false }), 4 / 3, facial), null);
 });
 
+test("head yaw and roll distances use circular differences", () => {
+  const required = { left: false, right: false, face: true };
+  const first = { hands: {}, face: Array(32).fill(0) };
+  const wrapped = { hands: {}, face: Array(32).fill(0) };
+  first.face[29] = 0.99;
+  first.face[31] = -0.99;
+  wrapped.face[29] = -0.99;
+  wrapped.face[31] = 0.99;
+  assert.ok(holisticDistance(first, wrapped, required) < 0.1);
+});
+
 test("a bimanual descriptor includes independently identified left and right hands", () => {
   const required = { left: true, right: true, face: false };
   const baseline = extractHolisticFeatures(

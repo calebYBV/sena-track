@@ -77,7 +77,6 @@
     <nav class="quick-links" aria-label="Vistas principales">
       <a href="#translator" data-view="translator" aria-controls="translatorView" aria-current="page">Traductor</a>
       <a href="#settings" data-view="settings" aria-controls="settingsView">Ajustes</a>
-      <a href="#edo" data-view="edo" aria-controls="edoView">EDO</a>
     </nav>
     <div class="header-account">
       <p id="syncStatus" class="sync-status" role="status" aria-live="polite">Sincronización pendiente de configuración.</p>
@@ -156,18 +155,13 @@
 
   </div>
 
-  <section class="app-view edo-view" id="edoView" aria-labelledby="edoViewTitle" data-view-panel="edo" hidden>
-    <h1 id="edoViewTitle" class="view-heading" tabindex="-1">EDO</h1>
-    <div class="edo-content"></div>
-  </section>
-
   <section class="settings-section app-view" id="settingsView" aria-labelledby="settingsViewTitle" data-view-panel="settings" hidden>
     <h1 id="settingsViewTitle" class="view-heading" tabindex="-1">Ajustes</h1>
     <section class="card white settings-card" id="generalSettings" aria-labelledby="generalSettingsTitle">
-      <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> Ajustes generales</h2>
+      <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> A. Reconocimiento</h2>
       <details class="advanced-settings">
         <summary>Sensibilidad del reconocimiento (avanzado)</summary>
-        <p>Ambas rutas se evalúan automáticamente; estos umbrales solo ajustan la tolerancia de sus clasificadores.</p>
+        <p>La rama seleccionada controla la salida; estos umbrales ajustan la tolerancia de los clasificadores.</p>
         <div class="ctl">
           <div class="top"><label for="tol">Tolerancia de postura</label><span id="tolVal"></span></div>
           <input type="range" id="tol" min="0.3" max="1.5" step="0.05" value="0.8">
@@ -181,6 +175,19 @@
         <div class="top"><label for="dur">Duración de captura y ventana dinámica</label><span id="durVal"></span></div>
         <input type="range" id="dur" min="1" max="3.5" step="0.5" value="2">
       </div>
+    </section>
+    <section class="card white settings-card" id="librarySettings" aria-labelledby="librarySettingsTitle">
+      <h2 id="librarySettingsTitle"><span class="card-icon" aria-hidden="true">☷</span> C. Datos y biblioteca</h2>
+      <div class="settings-actions">
+        <button id="btnImportLocal" class="btn line" type="button">Importar señas locales…</button>
+        <button id="btnExport" class="btn line" type="button">Exportar señas</button>
+        <button id="btnImport" class="btn line" type="button">Importar JSON</button>
+        <button id="btnReset" class="btn line" type="button">Borrar todas</button>
+      </div>
+      <input type="file" id="file" accept="application/json" hidden>
+    </section>
+    <section class="card white settings-card" id="accessibilitySettings" aria-labelledby="accessibilitySettingsTitle">
+      <h2 id="accessibilitySettingsTitle"><span class="card-icon" aria-hidden="true">♫</span> D. Voz y accesibilidad</h2>
       <fieldset class="voice-preferences">
         <legend>Lectura de voz</legend>
         <div class="speech-mode" role="radiogroup" aria-label="Modalidad de lectura">
@@ -189,13 +196,6 @@
         </div>
         <label class="inline speech-permission"><input type="checkbox" id="speechEnabled" checked> <span>Permitir lectura en voz alta</span></label>
       </fieldset>
-      <div class="settings-actions">
-        <button id="btnImportLocal" class="btn line" type="button">Importar señas locales…</button>
-        <button id="btnExport" class="btn line" type="button">Exportar señas</button>
-        <button id="btnImport" class="btn line" type="button">Importar JSON</button>
-        <button id="btnReset" class="btn line" type="button">Borrar todas</button>
-      </div>
-      <input type="file" id="file" accept="application/json" hidden>
     </section>
 
   </section>
@@ -206,10 +206,16 @@
         <div class="evaluation-heading">
           <div class="comparison-title">
             <h2 id="evaluationTitle"><span class="card-icon" aria-hidden="true">▮</span> Comparación EDO</h2>
-            <p class="active-model"><span>Modelo activo</span><strong id="activeModelName">Filtro de primer orden</strong></p>
+            <p class="active-model"><span>Modelo EDO seleccionado</span><strong id="activeModelName">Filtro de primer orden</strong></p>
           </div>
           <span class="example-badge">Misma ejecución</span>
         </div>
+        <fieldset class="recognition-mode" role="radiogroup" aria-label="Rama activa del reconocimiento">
+          <legend>Rama que controla el reconocimiento</legend>
+          <label><input id="recognitionModeEdo" type="radio" name="recognitionMode" value="edo" checked><span>EDO activada</span></label>
+          <label><input id="recognitionModeMediaPipe" type="radio" name="recognitionMode" value="mediapipe"><span>Solo MediaPipe</span></label>
+        </fieldset>
+        <p class="active-recognition-mode" id="activeRecognitionMode" aria-live="polite">EDO controla el reconocimiento</p>
         <label class="reference-control" for="evaluationReference">Seña de referencia</label>
         <select id="evaluationReference">
           <option value="">Candidata de la rama principal</option>
@@ -227,10 +233,10 @@
             <p class="branch-distance">Distancia<strong id="filteredDistance">—</strong></p>
           </article>
         </div>
-        <div class="reduction-readout"><span>Reducción de distancia a la seña de referencia</span><strong id="distanceReduction">No disponible</strong></div>
+        <div class="reduction-readout"><span>Diferencia de distancia (Solo MediaPipe − EDO)</span><strong id="distanceReduction">No disponible</strong></div>
         <p class="comparison-message" id="comparisonStatus">Muestra las partes requeridas para comparar.</p>
-        <p class="hint comparison-caveat">Verde: EDO redujo la distancia; rojo: la aumentó. Se compara el mismo ejemplo en ambas ramas; esto no demuestra un acierto ni es una probabilidad.</p>
-        <p class="hint" id="comparisonNote">La salida sin EDO es la de MediaPipe y puede incluir procesamiento interno.</p>
+        <p class="hint comparison-caveat">La diferencia compara distancia al mismo ejemplo y cuadro; no representa exactitud ni una probabilidad. MediaPipe puede incluir procesamiento interno.</p>
+        <p class="hint" id="comparisonNote">Las distancias y predicciones son experimentales y no intervienen en la selección de la rama activa.</p>
       </section>
 
       <section class="card white tracking-metrics" aria-labelledby="trackingMetricsTitle">
@@ -244,7 +250,7 @@
       <p class="hint face-status" id="faceStatus" aria-live="polite"></p>
     </aside>
     <section class="card white edo-settings" id="edoSettings" aria-labelledby="edoSettingsTitle">
-      <h2 id="edoSettingsTitle"><span class="card-icon" aria-hidden="true">∿</span> EDO utilizada y configuración</h2>
+      <h2 id="edoSettingsTitle"><span class="card-icon" aria-hidden="true">∿</span> B. Configuración EDO</h2>
       <p class="active-model settings-model"><span>Modelo actualmente seleccionado</span><strong id="settingsModelName">Filtro de primer orden</strong></p>
       <div class="equation-card">
         <div id="firstEquation" class="equation-view">
@@ -288,7 +294,6 @@
           <select id="filterModel" aria-describedby="filterModelDescription">
             <option value="first">Primer orden</option>
             <option value="second">Segundo orden</option>
-            <option value="off">Desactivado</option>
           </select>
         </label>
         <p id="filterModelDescription" class="control-description">Filtro de primer orden: suavizado gradual con una constante de tiempo τ.</p>
@@ -301,7 +306,7 @@
         <label id="omegaControl">Frecuencia natural ωₙ <span class="control-value"><output id="filterOmegaValue"></output></span>
           <input id="filterOmega" type="range" min="2" max="30" step="1" value="14">
         </label>
-        <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span>Mostrar puntos originales de MediaPipe</span></label>
+        <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span id="compareVisualLabel">Mostrar puntos de la otra rama</span></label>
       </div>
       <details class="ambiguity-settings">
         <summary>Rechazo de resultados ambiguos</summary>
@@ -326,12 +331,14 @@
         <div id="offCalculation" class="calculation-copy" hidden><p>No se aplica una ecuación de filtro adicional; se devuelven las coordenadas de entrada.</p></div>
       </details>
     </section>
-    <section class="card white experimental-evaluation" aria-labelledby="experimentalEvaluationTitle">
-      <h2 id="experimentalEvaluationTitle"><span class="card-icon" aria-hidden="true">⌁</span> Evaluación experimental independiente</h2>
-      <p>Esta vista compara ramas con una seña de referencia durante la misma ejecución; no mide exactitud ni demuestra una mejora general. Para evaluar reconocimiento, usa el CLI offline con conjuntos independientes de entrenamiento, validación y prueba:</p>
-      <code>npm run evaluate -- entrenamiento.json validacion.json prueba.json --session-split</code>
-      <p>El evaluador informa métricas por tipo de seña y no modifica Supabase. Las capturas sintéticas de las pruebas no representan precisión real.</p>
-    </section>
+    <details class="card white experimental-evaluation">
+      <summary>Evaluación experimental independiente</summary>
+      <div class="experimental-evaluation-content">
+        <p>La comparación en vivo muestra distancias a una referencia, no exactitud ni mejora general. Para evaluar reconocimiento, usa el CLI offline con conjuntos independientes de entrenamiento, validación y prueba:</p>
+        <code>npm run evaluate -- entrenamiento.json validacion.json prueba.json --session-split</code>
+        <p>El evaluador informa métricas por tipo de seña y no modifica Supabase. Las capturas sintéticas de las pruebas no representan precisión real.</p>
+      </div>
+    </details>
   </template>
 </main>
 

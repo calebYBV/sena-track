@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createRecognition,
+  calculateDistanceDifference,
   calculateDistanceReduction,
   DEFAULT_AMBIGUITY_CONFIG,
   normalizeAmbiguityConfig
@@ -52,6 +53,22 @@ test("static classification rejects close classes and accepts a clearly separate
   assert.equal(recognition.classify(query)?.label, "A");
 });
 
+test("mean facial descriptors average yaw and roll circularly", () => {
+  const recognition = makeRecognition({ samples: [], motions: [] });
+  const first = Array(32).fill(0);
+  const second = Array(32).fill(0);
+  first[29] = 0.99;
+  first[31] = -0.99;
+  second[29] = -0.99;
+  second[31] = 0.99;
+  const average = recognition.meanDescriptors([
+    { hands: {}, face: first },
+    { hands: {}, face: second }
+  ]);
+  assert.ok(Math.abs(average.face[29]) > 0.99);
+  assert.ok(Math.abs(average.face[31]) > 0.99);
+});
+
 test("empty, one-class, and invalid ambiguity settings are handled explicitly", () => {
   const state = { samples: [], motions: [] };
   const recognition = makeRecognition(state);
@@ -77,6 +94,25 @@ test("static frame comparison reuses per-branch results and returns saved-exampl
     l: "A",
     r: recognition.features(rawLandmarks, "Left"),
     f: recognition.features(filteredLandmarks, "Left")
+  });
+
+  test("paired live distances are unavailable when a legacy sign has no raw reference", () => {
+    const state = { samples: [], motions: [] };
+    const recognition = makeRecognition(state);
+    const landmarks = Array.from({ length: 21 }, (_, index) => ({
+      x: 0.2 + index * 0.002,
+      y: 0.3 + index * 0.003,
+      z: index * 0.001
+    }));
+    const features = recognition.features(landmarks, "Left");
+    state.samples.push({ l: "Sin raw", f: features });
+    const result = recognition.compareStaticFrames(
+      { hands: { Left: landmarks } },
+      { hands: { Left: landmarks } }
+    );
+    assert.equal(result.rawPrediction?.label, "Sin raw");
+    assert.deepEqual(result.rawDistances, {});
+    assert.deepEqual(result.filteredDistances, {});
   });
 
   const comparison = recognition.compareStaticFrames(rawFrame, filteredFrame);
@@ -358,4 +394,11 @@ test("distance reduction reports improvements, regressions, equality, and zero b
   assert.equal(calculateDistanceReduction(0, 0.4), null);
   assert.equal(calculateDistanceReduction(1e-7, 0), null);
   assert.equal(calculateDistanceReduction(Number.NaN, 1), null);
+});
+
+test("distance difference reports signed same-reference changes without percentages", () => {
+  assert.ok(Math.abs(calculateDistanceDifference(0.7, 0.4) - 0.3) < 1e-12);
+  assert.ok(Math.abs(calculateDistanceDifference(0.4, 0.7) + 0.3) < 1e-12);
+  assert.equal(calculateDistanceDifference(0.4, 0.4), 0);
+  assert.equal(calculateDistanceDifference(Number.NaN, 0.4), null);
 });
