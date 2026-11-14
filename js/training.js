@@ -98,6 +98,10 @@ function setCaptureProgress(label, current, total, detail = ""){
 }
 function startMotion(purpose, label){
   if (!state.ready || state.motion || state.capState) return;
+  if (state.evaluationCapture?.isRecording()){
+    setNote("Finaliza o cancela la captura de evaluación antes de iniciar otra grabación.");
+    return;
+  }
   setNote("");
   if (purpose === "recognize"){
     state.recognitionEnabled = true;

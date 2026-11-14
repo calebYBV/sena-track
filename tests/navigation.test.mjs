@@ -38,4 +38,8 @@ test("the interface has only translator and settings views with comparison contr
   assert.match(html, /<option value="second">Segundo orden<\/option>/);
   assert.doesNotMatch(html, /<option value="off">/);
   assert.match(html, /id="edoContents"/);
+  assert.match(html, /id="traceCoordinate"/);
+  assert.match(html, /id="evalCaptureStart"/);
+  assert.match(html, /id="evalTruth"/);
+  assert.match(html, /id="compareVisual"/);
 });

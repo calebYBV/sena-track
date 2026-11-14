@@ -435,6 +435,15 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .comparison-message{margin:5px 0 0;font-size:.82rem;line-height:1.25}
 .comparison-caveat{margin:4px 0 0!important;font-size:.7rem!important;line-height:1.3}
 #comparisonNote{margin:3px 0 0;font-size:.7rem;line-height:1.3}
+.coordinate-trace{margin-top:10px;padding:9px;border:1px solid #dcecf5;border-radius:12px;background:#fbfeff}
+.coordinate-trace label,.evaluation-capture-content label{display:flex;flex-direction:column;gap:4px;color:var(--ink);font-size:.76rem;font-weight:700}
+.coordinate-trace select,.evaluation-capture-content input,.evaluation-capture-content select{width:100%;min-width:0;padding:7px 8px;border:1px solid #cfe5f2;border-radius:9px;background:#fff;color:var(--ink);font:inherit;font-size:.78rem}
+.coordinate-trace canvas{display:block;width:100%;height:132px;margin-top:7px;border:1px solid #e0edf4;border-radius:8px}
+.trace-legend{display:flex;justify-content:center;gap:14px;margin-top:5px;color:var(--muted);font-size:.68rem}
+.trace-legend span{display:inline-flex;align-items:center;gap:4px}
+.trace-legend span:before{width:9px;height:3px;border-radius:2px;background:#0c71c6;content:""}
+.trace-legend span+span:before{background:#67a938}
+.coordinate-trace .hint{margin:4px 0 0;font-size:.65rem;line-height:1.3}
 .evaluation.is-disabled{opacity:.55;filter:grayscale(.8)}
 .tracking-metrics{padding:13px 14px!important}
 .tracking-metrics h2{margin-bottom:8px}
@@ -444,6 +453,13 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .tracking-metric-grid span{font-size:.96rem;line-height:1.2}
 .tracking-metric-grid small{color:var(--muted);font-size:.65rem;line-height:1.2}
 .tracking-metrics .hint{margin:6px 0 0;font-size:.7rem;line-height:1.3}
+.evaluation-capture{min-width:0}
+.evaluation-capture>summary{color:var(--sea);font-family:var(--display);font-size:.95rem;font-weight:700;cursor:pointer}
+.evaluation-capture-content p{margin:7px 0;color:var(--muted);font-size:.72rem;line-height:1.35}
+.evaluation-capture-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:7px}
+.evaluation-capture-actions{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.evaluation-capture-actions .btn{min-height:34px;padding:6px 8px;font-size:.74rem}
+.evaluation-capture-content #evalCaptureStatus{color:var(--sea);font-weight:700}
 .face-status:empty{display:none}
 .settings-section{display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0;margin-top:0}
 .settings-section .card{margin:0;padding:20px;border-radius:20px}
@@ -464,7 +480,8 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .settings-section .settings-card{min-width:0}
 .experimental-evaluation>summary{color:var(--sea);font-family:var(--display);font-size:1.05rem;font-weight:700;cursor:pointer}
 .experimental-evaluation-content p{margin:8px 0;font-size:.86rem;line-height:1.45}
-.experimental-evaluation-content code{display:block;max-width:100%;overflow-wrap:anywhere;padding:9px 11px;border-radius:10px;background:#f0f9ff;color:var(--sea);font-size:.82rem}
+.experimental-evaluation-content code{display:inline;max-width:100%;overflow-wrap:anywhere;padding:2px 4px;border-radius:5px;background:#f0f9ff;color:var(--sea);font-size:.82rem}
+.experimental-evaluation-content>code{display:block;padding:9px 11px;border-radius:10px}
 .settings-actions{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
 .settings-actions .btn{min-height:40px;font-size:.8rem}
 .settings-section label.inline{font-size:.85rem}
@@ -506,6 +523,7 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
   .workspace-right .evaluation{grid-column:1;grid-row:1/3}
   .workspace-right .tracking-metrics{grid-column:2;grid-row:1}
   .workspace-right .face-status{grid-column:2;grid-row:2}
+  .workspace-right .evaluation-capture{grid-column:2;grid-row:3}
   .settings-section{grid-template-columns:minmax(0,1fr)}
   .header-account .sync-status{max-width:180px}
 }
@@ -526,6 +544,7 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
   .workspace-center{grid-column:1;grid-row:3;display:flex}
   .workspace-center .camera-section{grid-row:auto}
   .workspace-right{grid-column:1;grid-row:4;display:flex}
+  .workspace-right .evaluation-capture{grid-column:auto;grid-row:auto}
   .workspace .card{padding:13px}
   .workspace-center .stage{aspect-ratio:4/3}
   .equation-math{font-size:1rem}
@@ -545,6 +564,7 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
   .comparison-branch{padding:7px}
   .branch-distance{font-size:.65rem}
   .tracking-metric-grid{grid-template-columns:1fr 1fr}
+  .evaluation-capture-fields{grid-template-columns:1fr}
   .evaluation-controls,.variables{grid-template-columns:1fr}
   .equation-math{font-size:.95rem}
   .evaluation-controls .control-description{grid-column:1}

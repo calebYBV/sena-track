@@ -210,7 +210,7 @@
           </div>
           <span class="example-badge">Misma ejecución</span>
         </div>
-        <p class="active-recognition-mode" id="activeRecognitionMode" aria-live="polite">MediaPipe + EDO controla el reconocimiento. MediaPipe sin filtro se muestra solo para comparación.</p>
+        <p class="active-recognition-mode" id="activeRecognitionMode" aria-live="polite">MediaPipe + EDO controla el reconocimiento. La señal original se muestra solo para diagnóstico.</p>
         <label class="reference-control" for="evaluationReference">Seña de referencia</label>
         <select id="evaluationReference">
           <option value="">Candidata de la rama principal</option>
@@ -232,16 +232,59 @@
         <p class="comparison-message" id="comparisonStatus">Muestra las partes requeridas para comparar.</p>
         <p class="hint comparison-caveat">La diferencia compara distancia al mismo ejemplo y cuadro; no representa exactitud ni una probabilidad. MediaPipe puede incluir procesamiento interno.</p>
         <p class="hint" id="comparisonNote">La rama sin filtro es exclusivamente experimental y nunca controla la traducción. Sin referencias raw verificables, la comparación no está disponible.</p>
+        <div class="coordinate-trace">
+          <label for="traceCoordinate">Coordenada en el tiempo</label>
+          <select id="traceCoordinate"></select>
+          <canvas id="traceChart" height="120" role="img" aria-label="Coordenadas MediaPipe y EDO a lo largo del tiempo"></canvas>
+          <div class="trace-legend"><span>MediaPipe</span><span>MediaPipe + EDO</span></div>
+          <p class="hint" id="traceStatus">Esperando coordenadas de la cámara.</p>
+        </div>
       </section>
 
       <section class="card white tracking-metrics" aria-labelledby="trackingMetricsTitle">
         <h2 id="trackingMetricsTitle"><span class="card-icon" aria-hidden="true">⌁</span> Estabilidad y respuesta</h2>
         <div class="tracking-metric-grid">
-          <p><strong>Vibración</strong><span id="vibrationReduction">No calculable</span><small id="vibrationDistances">Esperando un segmento quieto</small></p>
-          <p><strong>Retraso añadido</strong><span id="trackingLag">No calculable</span></p>
+          <p><strong>Estabilidad (segmento quieto)</strong><span id="vibrationReduction">No calculable</span><small id="vibrationDistances">Esperando un segmento quieto</small><small id="stabilityAssessment">Sin datos suficientes</small></p>
+          <p><strong>Retardo temporal estimado</strong><span id="trackingLag">No calculable</span></p>
         </div>
-        <p class="hint" id="trackingMetricNote">La reducción de vibración se evalúa con la mano quieta; el retraso se estima durante movimiento.</p>
+        <p class="hint" id="trackingMetricNote">En la mano seguida, la vibración es RMS del desplazamiento de sus 21 landmarks entre cuadros, normalizado por el tamaño de palma raw. El retardo es el desfase de máxima correlación entre velocidades x/y de muñeca en movimiento; no es tiempo de cómputo ni de decisión.</p>
       </section>
+      <details class="card white evaluation-capture">
+        <summary>Capturas etiquetadas para evaluación</summary>
+        <div class="evaluation-capture-content">
+          <p>Graba solo coordenadas MediaPipe, con etiqueta verdadera. Se guardan en memoria local de esta sesión; no se envían a Supabase ni se guardan imágenes o video.</p>
+          <label>Etiqueta verdadera
+            <input id="evalTruth" maxlength="80" autocomplete="off" placeholder="Nombre exacto de la seña">
+          </label>
+          <div class="evaluation-capture-fields">
+            <label>Tipo
+              <select id="evalKind"><option value="static">Postura estática</option><option value="motion">Movimiento</option></select>
+            </label>
+            <label>Partición
+              <select id="evalSplit"><option value="training">Entrenamiento</option><option value="validation">Validación</option><option value="test">Prueba</option></select>
+            </label>
+            <label>Duración
+              <select id="evalDuration"><option value="1500">1,5 s</option><option value="2000" selected>2 s</option><option value="3000">3 s</option></select>
+            </label>
+          </div>
+          <div class="evaluation-capture-fields">
+            <label>Participante seudónimo (opcional)
+              <input id="evalParticipant" maxlength="128" autocomplete="off" placeholder="P01">
+            </label>
+            <label>Sesión seudónima (opcional)
+              <input id="evalSession" maxlength="128" autocomplete="off" placeholder="S01">
+            </label>
+          </div>
+          <div class="evaluation-capture-actions">
+            <button id="evalCaptureStart" class="btn blue" type="button">Grabar captura</button>
+            <button id="evalCaptureCancel" class="btn line" type="button" disabled>Cancelar</button>
+            <button id="evalExport" class="btn line" type="button">Exportar partición</button>
+            <button id="evalClear" class="btn line" type="button">Borrar capturas</button>
+          </div>
+          <p id="evalCaptureStatus" role="status" aria-live="polite">0 capturas. Reúne participantes y sesiones independientes entre particiones.</p>
+          <p class="hint">Captura las referencias de entrenamiento con este panel y exporta cada partición. El evaluador compara exactamente las mismas capturas en raw, EDO de primer y segundo orden. Usa datos de validación para elegir parámetros; reserva prueba para el resultado final. Las trayectorias incompletas no se aceptan como señas dinámicas.</p>
+        </div>
+      </details>
       <p class="hint face-status" id="faceStatus" aria-live="polite"></p>
     </aside>
     <section class="card white edo-settings" id="edoSettings" aria-labelledby="edoSettingsTitle">
@@ -300,7 +343,7 @@
         <label id="omegaControl">Frecuencia natural ωₙ <span class="control-value"><output id="filterOmegaValue"></output></span>
           <input id="filterOmega" type="range" min="2" max="30" step="1" value="14">
         </label>
-        <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span id="compareVisualLabel">Mostrar puntos de la otra rama</span></label>
+        <label class="inline evaluation-visual"><input type="checkbox" id="compareVisual"> <span id="compareVisualLabel">Superponer coordenadas originales y EDO</span></label>
       </div>
       <details class="ambiguity-settings">
         <summary>Rechazo de resultados ambiguos</summary>
@@ -327,9 +370,9 @@
     <details class="card white experimental-evaluation">
       <summary>Evaluación experimental independiente</summary>
       <div class="experimental-evaluation-content">
-        <p>La comparación en vivo muestra distancias a una referencia, no exactitud ni mejora general. Para evaluar reconocimiento, usa el CLI offline con conjuntos independientes de entrenamiento, validación y prueba:</p>
+        <p>Exporta las particiones con capturas etiquetadas desde el panel del Traductor y evalúalas sin alterar la biblioteca ni Supabase:</p>
         <code>npm run evaluate -- entrenamiento.json validacion.json prueba.json --session-split</code>
-        <p>El evaluador informa métricas por tipo de seña y no modifica Supabase. Las capturas sintéticas de las pruebas no representan precisión real.</p>
+        <p>El evaluador informa exactitud, macro-F1, rechazos, falsos positivos y latencia por tipo de seña y por modelo. Opcionalmente, añade una lista <code>filterCandidates</code> al JSON de validación para probar valores de τ, ζ y ωₙ; el conjunto de prueba no se usa para seleccionarlos. Las pruebas automatizadas sintéticas no son resultados reales.</p>
       </div>
     </details>
   </template>
