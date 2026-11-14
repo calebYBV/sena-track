@@ -1,4 +1,4 @@
-import { normalizeFilterConfig } from "./filters.js";
+import { normalizeActiveFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 import {
   prepareSamplePayload,
@@ -142,16 +142,13 @@ export function createStorage({ state, dom, ui }){
 
   function applySettings(settings){
     if (!settings) return;
-    const storedModel = settings.filter_model ?? state.filterConfig.model;
-    const legacyModeDisabled = storedModel === "off";
-    state.filterConfig = normalizeFilterConfig({
-      model: legacyModeDisabled ? "first" : storedModel,
+    state.filterConfig = normalizeActiveFilterConfig({
+      model: settings.filter_model ?? state.filterConfig.model,
       tau: settings.tau ?? state.filterConfig.tau,
       zeta: settings.zeta ?? state.filterConfig.zeta,
       omegaN: settings.omega_n ?? state.filterConfig.omegaN,
       compareVisual: settings.show_raw_points ?? state.filterConfig.compareVisual
     });
-    if (legacyModeDisabled) ui.setRecognitionMode("mediapipe");
     $("tol").value = settings.static_tolerance ?? $("tol").value;
     $("tolM").value = settings.motion_tolerance ?? $("tolM").value;
     $("dur").value = settings.capture_duration ?? $("dur").value;
@@ -671,13 +668,7 @@ export function createStorage({ state, dom, ui }){
     };
     const imported = await importIntoState(normalized);
     if (library.filters){
-      const importedConfig = normalizeFilterConfig(library.filters);
-      const legacyModeDisabled = importedConfig.model === "off";
-      state.filterConfig = normalizeFilterConfig({
-        ...importedConfig,
-        model: legacyModeDisabled ? "first" : importedConfig.model
-      });
-      if (legacyModeDisabled) ui.setRecognitionMode("mediapipe");
+      state.filterConfig = normalizeActiveFilterConfig(library.filters);
       state.onFilterChange?.();
     }
     renderList();
@@ -820,7 +811,7 @@ export function createStorage({ state, dom, ui }){
       userLoadToken++;
       state.samples = [];
       state.motions = [];
-      state.filterConfig = normalizeFilterConfig(null);
+      state.filterConfig = normalizeActiveFilterConfig(null);
       state.ambiguityConfig = normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG);
       $("tol").value = "0.8";
       $("tolM").value = "0.7";

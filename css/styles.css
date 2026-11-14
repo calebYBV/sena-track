@@ -97,10 +97,10 @@ h2{font-family:var(--display);font-weight:700;font-size:1.25rem;margin:0 0 12px}
 .active-model strong{color:var(--sea);font-family:var(--display);font-size:1.1rem}
 .equation-card{padding:clamp(16px,3vw,26px);border:2px solid #bcecff;border-radius:22px;background:linear-gradient(135deg,#f4fcff,#e8f9ff)}
 .evaluation h3{font-family:var(--display);font-size:1.15rem;margin:0 0 12px}
-.equation-view[hidden],.calculation-copy[hidden],#offDescription[hidden]{display:none}
+.equation-view[hidden],.calculation-copy[hidden]{display:none}
 .equation-math{display:block;max-width:100%;margin:12px 0 18px;overflow-x:auto;color:var(--ink);font-size:clamp(1.35rem,3vw,2.15rem);text-align:center}
 .equation-math.compact{font-size:clamp(1.05rem,2.2vw,1.55rem)}
-.equation-view>p,.off-description{max-width:76ch;margin:0;font-size:1.05rem}
+.equation-view>p{max-width:76ch;margin:0;font-size:1.05rem}
 .variables{display:flex;flex-wrap:wrap;gap:8px 20px;list-style:none;margin:16px 0 0;padding:0}
 .variables li{display:flex;gap:7px;align-items:baseline;max-width:100%}
 .variables strong{color:var(--sea);white-space:nowrap}
@@ -419,14 +419,6 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .active-model span{color:var(--muted);font-size:.73rem}
 .active-model strong{color:var(--sea);font-family:var(--body);font-size:.86rem;line-height:1.2}
 .example-badge{flex:none;padding:4px 7px;border-radius:999px;background:#fff0c9;color:#846319;font-size:.62rem;font-weight:700;white-space:nowrap}
-.recognition-mode{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;margin:9px 0;padding:8px;border:1px solid #d6edf8;border-radius:12px;background:#f7fcff}
-.recognition-mode legend{grid-column:1/-1;padding:0 4px;color:var(--ink);font-size:.73rem;font-weight:700}
-.recognition-mode label{position:relative;min-width:0;cursor:pointer}
-.recognition-mode input{position:absolute;width:1px;height:1px;opacity:0}
-.recognition-mode span{display:block;padding:7px 5px;border:1px solid #cfe5f2;border-radius:9px;color:var(--muted);font-size:.76rem;font-weight:700;text-align:center;line-height:1.2}
-.recognition-mode input:checked+span{border-color:var(--sea);background:var(--sea);color:#fff}
-.recognition-mode input:focus-visible+span{outline:2px solid var(--ink);outline-offset:2px}
-.recognition-mode input:disabled+span{opacity:.55;cursor:not-allowed}
 .active-recognition-mode{margin:-3px 0 8px;color:var(--sea);font-size:.74rem;font-weight:700}
 .reference-control{display:block;margin:0 0 4px;font-size:.78rem;font-weight:700}
 #evaluationReference{display:block;width:100%;min-width:0;padding:7px 9px;border:1px solid #cfe5f2;border-radius:10px;background:#fff;color:var(--ink);font:inherit;font-size:.84rem}
@@ -480,11 +472,11 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .settings-model{margin:0 0 12px;padding:8px 11px;border-radius:11px;background:#f0f9ff}
 .settings-model strong{font-size:.95rem}
 .equation-card{padding:13px;border:1px solid #d6edf8;border-radius:15px;background:linear-gradient(135deg,#f7fcff,#edf9ff)}
-.equation-view[hidden],.calculation-copy[hidden],#offDescription[hidden]{display:none}
+.equation-view[hidden],.calculation-copy[hidden]{display:none}
 .equation-card h3{margin:0 0 4px;color:var(--sea);font-family:var(--display);font-size:1rem}
 .equation-math{max-width:100%;margin:8px auto 10px;overflow:visible;color:var(--ink);font-size:clamp(1rem,1.4vw,1.4rem);text-align:center}
 .equation-math.compact{font-size:1rem}
-.equation-view>p,.off-description{margin:0;font-size:.91rem;line-height:1.4}
+.equation-view>p{margin:0;font-size:.91rem;line-height:1.4}
 .variables{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 14px;margin:10px 0 0}
 .variables li{gap:5px;min-width:0;font-size:.8rem;line-height:1.3}
 .variables strong{flex:none;color:var(--sea)}

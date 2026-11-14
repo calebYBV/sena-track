@@ -13,10 +13,11 @@ import { extractHolisticFeatures } from "../js/holistic.js";
 const zero = length => Array(length).fill(0);
 const sequence = value => Array.from({ length: 24 }, () => Array(65).fill(value));
 
-function makeRecognition(state, values = { tol: "1.5", tolM: "2" }){
+function makeRecognition(state, values = { tol: "1.5", tolM: "2" },
+    video = { videoWidth: 640, videoHeight: 480 }){
   return createRecognition({
     state,
-    dom: { $: id => ({ value: values[id] }), video: { videoWidth: 640, videoHeight: 480 } }
+    dom: { $: id => ({ value: values[id] }), video }
   });
 }
 
@@ -380,6 +381,55 @@ test("a failed v2 reference replay cannot silently use stale filtered features",
   );
 });
 
+test("filtered references become unavailable rather than stale when aspect data is missing", () => {
+  const components = { left: true, right: false, face: false };
+  const rawFrames = Array.from({ length: 8 }, (_, frameIndex) => ({
+    time: frameIndex * 33,
+    hands: {
+      Left: Array.from({ length: 21 }, (_, index) => ({
+        x: 0.3 + frameIndex * 0.001 + index * 0.003,
+        y: 0.2 + index * 0.002,
+        z: index * 0.001
+      }))
+    }
+  }));
+  const video = { videoWidth: 640, videoHeight: 480 };
+  const state = {
+    samples: [], motions: [], filterConfig: { ...DEFAULT_FILTER_CONFIG }
+  };
+  const recognition = makeRecognition(state, undefined, video);
+  const rawDescriptors = rawFrames.map(frame =>
+    extractHolisticFeatures(frame, 4 / 3, components));
+  const filteredFrames = recognition.filterFrames(rawFrames, state.filterConfig);
+  const filteredDescriptors = filteredFrames.map(frame =>
+    extractHolisticFeatures(frame, 4 / 3, components));
+  const sample = {
+    l: "Referencia regenerable",
+    kind: "static",
+    source: "paired-raw-and-filtered-v2",
+    components,
+    rawFrames,
+    rh: recognition.meanDescriptors(rawDescriptors),
+    h: recognition.meanDescriptors(filteredDescriptors)
+  };
+  state.samples.push(sample);
+
+  assert.equal(recognition.prepareFilteredReferences(state.filterConfig), true);
+  assert.equal(
+    recognition.classifyStaticDescriptor(
+      recognition.meanDescriptors(filteredDescriptors), components, "filtered")?.label,
+    sample.l
+  );
+  video.videoWidth = 0;
+  assert.equal(recognition.prepareFilteredReferences(state.filterConfig), false);
+  assert.equal(
+    recognition.classifyStaticDescriptor(
+      recognition.meanDescriptors(filteredDescriptors), components, "filtered"),
+    null
+  );
+  assert.equal(recognition.hasFilterReferenceMismatch(sample), true);
+});
+
 test("legacy references remain unchanged and expose unavailable EDO regeneration", () => {
   const state = { samples: [], motions: [], filterConfig: { ...DEFAULT_FILTER_CONFIG } };
   const recognition = makeRecognition(state);
@@ -395,7 +445,7 @@ test("legacy references remain unchanged and expose unavailable EDO regeneration
   assert.deepEqual(legacy.h.hands.Left, zero(63));
 });
 
-test("legacy feature-only signs stay available in Solo MediaPipe with an explicit mismatch flag", () => {
+test("legacy feature-only references remain analyzable offline with an explicit mismatch flag", () => {
   const legacy = { l: "Legada", f: zero(63) };
   const recognition = makeRecognition({
     samples: [legacy],

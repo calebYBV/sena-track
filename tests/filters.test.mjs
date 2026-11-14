@@ -5,10 +5,17 @@ import {
   createEdoFilter,
   DEFAULT_FILTER_CONFIG,
   estimateTrackingLag,
-  FILTER_TRACKING_PAUSE_MS
+  FILTER_TRACKING_PAUSE_MS,
+  normalizeActiveFilterConfig
 } from "../js/filters.js";
 
 const point = x => [{ x, y: x * 2, z: -x }];
+
+test("active filter configuration safely migrates disabled and invalid legacy models to first order", () => {
+  assert.equal(normalizeActiveFilterConfig({ model: "off" }).model, "first");
+  assert.equal(normalizeActiveFilterConfig({ model: "unknown" }).model, "first");
+  assert.equal(normalizeActiveFilterConfig({ model: "second", zeta: 1.1 }).model, "second");
+});
 
 test("first-order filter initializes from a valid sample and converges monotonically", () => {
   const filter = createEdoFilter();

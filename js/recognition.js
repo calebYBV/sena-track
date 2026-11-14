@@ -94,13 +94,20 @@ function regenerateReference(sample, config, aspect){
 function prepareFilteredReferences(config = state.filterConfig || DEFAULT_FILTER_CONFIG){
   const normalized = normalizeFilterConfig(config);
   const aspect = video.videoWidth / video.videoHeight;
-  if (!Number.isFinite(aspect) || aspect <= 0) return;
+  if (!Number.isFinite(aspect) || aspect <= 0){
+    for (const sample of [...state.samples, ...state.motions]){
+      filteredReferences.set(sample, null);
+      if (canReplayReference(sample)) failedReferenceReplays.add(sample);
+      else unreplayableReferences.add(sample);
+    }
+    return false;
+  }
   if (preparedModel === normalized.model && preparedTau === normalized.tau &&
       preparedZeta === normalized.zeta && preparedOmegaN === normalized.omegaN &&
       preparedAspect === aspect &&
       preparedSamples === state.samples && preparedMotions === state.motions &&
       preparedSampleCount === state.samples.length && preparedMotionCount === state.motions.length){
-    return;
+    return true;
   }
   preparedModel = normalized.model;
   preparedTau = normalized.tau;
@@ -119,6 +126,7 @@ function prepareFilteredReferences(config = state.filterConfig || DEFAULT_FILTER
     if (canReplayReference(sample) && !reference) failedReferenceReplays.add(sample);
     else failedReferenceReplays.delete(sample);
   }
+  return true;
 }
 
 function hasFilterReferenceMismatch(sample){
@@ -172,7 +180,7 @@ function classifyCandidates(entries, threshold, ambiguityConfig = state.ambiguit
 }
 
 function classifyStaticDescriptor(descriptor, components, branch = "filtered"){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences() && branch === "filtered") return null;
   const entries = [];
   for (const sample of state.samples){
     if (sample.syncStatus === "pending" || !sample.components ||
@@ -306,7 +314,9 @@ function classify(f, branch = "filtered"){
 }
 
 function evaluateStaticFrame(frame, branch){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences() && branch === "filtered"){
+    return { prediction: null, distances: {}, entries: [] };
+  }
   const entries = [];
   const aspect = video.videoWidth / video.videoHeight;
   const descriptorCache = new Map();
@@ -499,7 +509,7 @@ function motionReferences(motion, branch){
   return branch === "raw" ? (motion.r || motion.s) : motion.s;
 }
 function motionDistances(seq, branch){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences() && branch === "filtered") return {};
   const best = {};
   for (const motion of state.motions){
     if (motion.syncStatus === "pending") continue;
@@ -524,7 +534,7 @@ function classifyMotion(seq, branch = "filtered"){
 }
 
 function classifyFrame(frame, branch = "filtered", kind = "static"){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences() && branch === "filtered") return null;
   const isMotion = kind === "motion";
   if (!isMotion) return evaluateStaticFrame(frame, branch).prediction;
   const examples = isMotion ? state.motions : state.samples;
@@ -588,7 +598,7 @@ function classifyFrame(frame, branch = "filtered", kind = "static"){
 }
 
 function holisticDistances(frame, branch = "filtered", kind = "static"){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences() && branch === "filtered") return {};
   const isMotion = kind === "motion";
   if (!isMotion) return evaluateStaticFrame(frame, branch).distances;
   const examples = isMotion ? state.motions : state.samples;
@@ -641,7 +651,7 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
 }
 
 function pairedHolisticDistances(frame, kind = "static"){
-  prepareFilteredReferences();
+  if (!prepareFilteredReferences()) return { rawDistances: {}, filteredDistances: {} };
   const examples = kind === "motion" ? state.motions : state.samples;
   const aspect = video.videoWidth / video.videoHeight;
   const rawFrame = frame.rawFrame || frame;
