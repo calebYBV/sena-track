@@ -15,6 +15,7 @@ export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
 let lastComparison = null;
 const traceCanvas = $("traceChart");
+const traceSelect = $("traceCoordinate");
 const traceContext = traceCanvas.getContext("2d");
 const traceSamples = [];
 let lastTraceUpdate = -Infinity;
@@ -34,7 +35,7 @@ const FACE_GEOMETRY = [
   "Apertura de boca", "Proporción de boca"
 ];
 function addTraceOption(value, label){
-  traceCanvas.previousElementSibling.add(new Option(label, value));
+  traceSelect.add(new Option(label, value));
 }
 for (const side of ["Left", "Right"]){
   const sideName = side === "Left" ? "izquierda" : "derecha";
@@ -56,7 +57,7 @@ FACE_GEOMETRY.forEach((name, index) =>
 for (const [index, name] of [[29, "yaw"], [30, "pitch"], [31, "roll"]]){
   addTraceOption(`feature:${index}`, `Cabeza · ${name} / π`);
 }
-$("traceCoordinate").value = "hand:Left:0:x";
+traceSelect.value = "hand:Left:0:x";
 
 function traceValue(frame, selection){
   const [type, identity, pointIndex, axis] = selection.split(":");
@@ -77,9 +78,9 @@ function drawCoordinateTrace(){
   if (!bounds.width) return;
   const ratio = window.devicePixelRatio || 1;
   traceCanvas.width = Math.round(bounds.width * ratio);
-  traceCanvas.height = Math.round(132 * ratio);
+  traceCanvas.height = Math.round(108 * ratio);
   traceContext.setTransform(ratio, 0, 0, ratio, 0, 0);
-  const width = bounds.width, height = 132;
+  const width = bounds.width, height = 108;
   const left = 36, right = width - 8, top = 8, bottom = height - 27;
   traceContext.clearRect(0, 0, width, height);
   traceContext.fillStyle = "#fbfeff";
@@ -144,18 +145,18 @@ function updateCoordinateTrace(rawFrame, filteredFrame, timestamp){
     traceSamples.push({ time: timestamp, raw, filtered });
     if (traceSamples.length > 90) traceSamples.shift();
     $("traceStatus").textContent = selection.startsWith("feature:")
-      ? "Puntuación/proporción facial o ángulo de cabeza en π; eje horizontal: tiempo real reciente."
-      : "Coordenada MediaPipe normalizada; eje horizontal: tiempo real reciente.";
+      ? "Característica facial · últimos segundos."
+      : "Coordenada normalizada · últimos segundos.";
   } else if (timestamp - lastTraceUpdate >= 500){
-    $("traceStatus").textContent = "La coordenada seleccionada no está detectada en este momento.";
+    $("traceStatus").textContent = "Coordenada no detectada.";
   }
   if (timestamp - lastTraceUpdate < 100) return;
   lastTraceUpdate = timestamp;
   drawCoordinateTrace();
 }
-$("traceCoordinate").addEventListener("change", () => {
+traceSelect.addEventListener("change", () => {
   traceSamples.length = 0;
-  $("traceStatus").textContent = "Esperando coordenadas de la opción seleccionada.";
+  $("traceStatus").textContent = "Esperando coordenadas.";
   drawCoordinateTrace();
 });
 function setNote(t){ noteEl.textContent = t; }
@@ -420,19 +421,21 @@ function setEvaluationEnabled(enabled){
   for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
   if (!enabled){
     lastComparison = null;
+    $("comparisonStatus").textContent = "Reconocimiento pausado";
+    $("executionStatus").textContent = "Esperando ejecución";
+    $("executionStatus").classList.remove("is-current", "is-unavailable");
     $("distanceReduction").parentElement.classList.remove("is-positive", "is-negative", "is-neutral");
-    $("referenceLabel").textContent = "Disponible al utilizar el Traductor";
+    $("referenceLabel").textContent = "Referencia disponible al reconocer";
     $("rawPrediction").textContent = "—";
     $("filteredPrediction").textContent = "—";
     $("rawDistance").textContent = "—";
     $("filteredDistance").textContent = "—";
     $("distanceReduction").textContent = "No disponible";
-    $("comparisonStatus").textContent = "Disponible al utilizar el Traductor";
-    $("comparisonNote").textContent = "Las capturas de entrenamiento no se contabilizan como pruebas.";
+    $("comparisonNote").textContent = "Las capturas de entrenamiento no cuentan como pruebas.";
     updateTrackingMetrics({
       rawVibration: null, filteredVibration: null, vibrationReduction: null, lagMs: null,
       note: "Métricas disponibles durante el reconocimiento, no durante la captura de ejemplos."
-    });
+    }, "En pausa");
   } else {
     lastComparison = null;
     renderComparison();
@@ -446,8 +449,11 @@ function renderComparison(){
   if ($("evaluationPanel").getAttribute("aria-disabled") === "true") return;
   const result = lastComparison;
   const reductionReadout = $("distanceReduction").parentElement;
+  const executionStatus = $("executionStatus");
   reductionReadout.classList.remove("is-positive", "is-negative", "is-neutral");
   reductionReadout.setAttribute("aria-label", "Diferencia de distancia no disponible");
+  executionStatus.textContent = "Esperando ejecución";
+  executionStatus.classList.remove("is-current", "is-unavailable");
   $("rawPrediction").textContent = predictionText(result?.rawPrediction);
   $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
   $("rawDistance").textContent = "—";
@@ -455,14 +461,20 @@ function renderComparison(){
   $("distanceReduction").textContent = "No disponible";
   if (!result?.detected){
     const requested = $("evaluationReference").value;
-    $("referenceLabel").textContent = requested ? `Seña seleccionada: ${requested}` : "Referencia candidata: uso libre";
-    $("comparisonStatus").textContent = result?.reason || "Muestra las partes requeridas para comparar.";
-    $("comparisonNote").textContent = "La comparación experimental se actualiza durante el reconocimiento activo; MediaPipe puede incluir procesamiento interno.";
+    $("referenceLabel").textContent = requested ? `Referencia: ${requested}` : "Referencia: candidata automática";
+    $("comparisonStatus").textContent = "Esperando referencia compatible";
+    $("comparisonNote").textContent = result?.reason || "Compara al detectar una seña compatible.";
+    if (result?.reason){
+      executionStatus.textContent = "No verificable";
+      executionStatus.classList.add("is-unavailable");
+    }
     return;
   }
   if (result.reason){
     $("comparisonStatus").textContent = "Comparación no disponible";
     $("comparisonNote").textContent = result.reason;
+    executionStatus.textContent = "No verificable";
+    executionStatus.classList.add("is-unavailable");
     return;
   }
   const requested = $("evaluationReference").value;
@@ -470,11 +482,13 @@ function renderComparison(){
   const reference = requested || mainPrediction?.label ||
     result.filteredPrediction?.label || result.rawPrediction?.label;
   $("referenceLabel").textContent = requested
-    ? `Seña seleccionada por el usuario: ${requested}`
-    : reference ? `Referencia candidata: ${reference}` : "Referencia candidata: aún no identificada";
+    ? `Referencia: ${requested}`
+    : reference ? `Referencia: ${reference}` : "Referencia: pendiente";
   if (!reference){
-    $("comparisonStatus").textContent = "Comparación no disponible";
-    $("comparisonNote").textContent = "Selecciona una seña de referencia o realiza una seña que tenga ejemplos guardados.";
+    $("comparisonStatus").textContent = "Esperando referencia compatible";
+    $("comparisonNote").textContent = "Elige una seña guardada o usa una candidata compatible.";
+    executionStatus.textContent = "Sin referencia compatible";
+    executionStatus.classList.add("is-unavailable");
     return;
   }
   const rawDistance = result.rawDistances?.[reference];
@@ -483,15 +497,17 @@ function renderComparison(){
   if (Number.isFinite(filteredDistance)) $("filteredDistance").textContent = filteredDistance.toFixed(4);
   if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance)){
     $("comparisonStatus").textContent = result.referenceFilterMismatch
-      ? "Comparación no disponible para esta referencia."
-      : "Guarda ejemplos de esta seña para calcular la comparación.";
+      ? "Comparación no disponible"
+      : "Esperando referencia compatible";
     $("comparisonNote").textContent = result.referenceFilterMismatch
-      ? "La referencia no se pudo emparejar o regenerar con el filtro activo. Se conserva por compatibilidad cuando es posible, pero esta comparación no está disponible; vuelve a capturar la seña."
-      : requested
-      ? "No hay ejemplos guardados de la seña seleccionada en esta modalidad."
-      : "La candidata no confirma la intención del usuario.";
+      ? "Referencia heredada sin raw verificable."
+      : requested ? "No hay ejemplos guardados para esta referencia." : "La candidata no confirma la intención.";
+    executionStatus.textContent = result.referenceFilterMismatch ? "No verificable" : "Sin referencia compatible";
+    executionStatus.classList.add("is-unavailable");
     return;
   }
+  executionStatus.textContent = "Misma ejecución";
+  executionStatus.classList.add("is-current");
   const difference = calculateDistanceDifference(rawDistance, filteredDistance);
   if (difference === null){
     $("distanceReduction").textContent = "No disponible";
@@ -507,47 +523,36 @@ function renderComparison(){
       : difference < 0
         ? `La distancia EDO es mayor en ${Math.abs(difference).toFixed(4)} unidades`
         : "Las distancias son iguales");
-    $("comparisonStatus").textContent = difference > 0 ? "EDO quedó más cerca de esta referencia" :
-      difference < 0 ? "EDO quedó más lejos de esta referencia" : "Las distancias son iguales";
+    $("comparisonStatus").textContent = "Métrica calculada con el mismo segmento";
   }
-  const notes = [];
-  notes.push("MediaPipe + EDO controla el reconocimiento; la rama MediaPipe sin filtro solo se calcula para comparar.");
-  notes.push("Ambas ramas usan el mismo cuadro y el mismo ejemplo guardado; la distancia no mide exactitud.");
-  if (!requested) notes.push("La candidata no confirma la intención del usuario.");
-  if (!requested && result.rawPrediction?.label && result.filteredPrediction?.label &&
-      result.rawPrediction.label !== result.filteredPrediction.label){
-    notes.push(`Las ramas discrepan: sin EDO predice “${result.rawPrediction.label}” y con EDO “${result.filteredPrediction.label}”.`);
-  }
-  if (result.legacyReference){
-    notes.push("La referencia incluye ejemplos heredados de manos sin datos faciales; vuelve a capturarlos si quieres añadir rostro o ambas manos.");
-  }
-  if (result.referenceFilterMismatch){
-    notes.push("Algunas referencias heredadas o no regenerables se conservan cuando es posible, pero su procesamiento histórico no se puede verificar y no permite una comparación experimental justa. Vuelve a capturarlas para generar referencias coherentes.");
-  }
-  notes.push("Una reducción de distancia no garantiza un reconocimiento correcto.");
-  $("comparisonNote").textContent = notes.join(" ");
+  $("comparisonNote").textContent = result.referenceFilterMismatch
+    ? "Referencia heredada sin raw verificable."
+    : result.legacyReference ? "Referencia heredada; compatibilidad limitada."
+      : "Misma referencia y cuadro para ambas ramas. La distancia no mide exactitud.";
 }
 function updateComparison(comparison){
   lastComparison = comparison;
   renderComparison();
 }
-function updateTrackingMetrics(metrics){
+function updateTrackingMetrics(metrics, calculationStatus){
   $("vibrationReduction").textContent = metrics.vibrationReduction == null
     ? "No calculable" : `${metrics.vibrationReduction.toFixed(1)}%`;
   $("vibrationDistances").textContent = metrics.rawVibration == null || metrics.filteredVibration == null
     ? "Esperando un segmento quieto"
-    : `${metrics.rawVibration.toFixed(5)} / ${metrics.filteredVibration.toFixed(5)} longitudes de palma/cuadro`;
+    : `${metrics.rawVibration.toFixed(5)} / ${metrics.filteredVibration.toFixed(5)} palma/cuadro`;
   $("trackingLag").textContent = metrics.lagMs == null
     ? "No calculable" : `${metrics.lagMs.toFixed(0)} ms · estimación`;
   const assessment = $("stabilityAssessment");
   assessment.textContent = metrics.rawVibration == null || metrics.filteredVibration == null
-    ? "Sin datos suficientes para comparar estabilidad"
+    ? "Esperando segmento quieto"
     : metrics.filteredVibration < metrics.rawVibration
-      ? "EDO mejora la estabilidad observada en este segmento"
+      ? "EDO reduce la vibración"
       : metrics.filteredVibration > metrics.rawVibration
-        ? "EDO empeora la estabilidad observada en este segmento"
-        : "Sin cambio medible de estabilidad en este segmento";
+        ? "EDO aumenta la vibración"
+        : "Sin cambio medible";
   $("trackingMetricNote").textContent = metrics.note;
+  $("trackingCalculationStatus").textContent = calculationStatus ||
+    (metrics.rawVibration != null || metrics.lagMs != null ? "Datos actualizados" : "Esperando segmento");
 }
 
 function clearForUser(){
