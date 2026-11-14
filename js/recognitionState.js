@@ -1,29 +1,13 @@
-export const RECOGNITION_MODES = Object.freeze(["edo", "mediapipe"]);
-
-export function recognitionBranch(state){
-  return state.recognitionMode === "mediapipe" ? "raw" : "filtered";
+export function selectActivePrediction(filteredPrediction){
+  return filteredPrediction;
 }
 
-export function shouldProcessEdo(state){
-  return recognitionBranch(state) === "filtered" || !!state.recognitionEnabled ||
-    !!state.motion || !!state.capState || !!state.filterConfig?.compareVisual;
-}
-
-export function selectActivePrediction(rawPrediction, filteredPrediction, mode){
-  return mode === "mediapipe" ? rawPrediction : filteredPrediction;
-}
-
-export function resetRecognitionForModeChange(state, mode){
-  if (!RECOGNITION_MODES.includes(mode)){
-    throw new RangeError(`Modo de reconocimiento desconocido: ${mode}`);
-  }
-  if (state.recognitionMode === mode) return false;
-
-  state.recognitionMode = mode;
+export function resetRecognitionForFilterChange(state){
   state.recognitionGeneration = (state.recognitionGeneration || 0) + 1;
   state.cand = null;
   state.candCount = 0;
   state.candSince = null;
+  state.committed = null;
   state.noHand = 0;
   state.noHandSince = null;
   state.neutralSince = null;
@@ -36,7 +20,6 @@ export function resetRecognitionForModeChange(state, mode){
     state.motion.segmentActive = false;
     state.motion.unrecognizedSince = 0;
   }
-  return true;
 }
 
 export function isCurrentRecognitionResult(state, generation){

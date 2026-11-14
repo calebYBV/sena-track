@@ -2,7 +2,7 @@ import { extractHolisticFeatures } from "./holistic.js";
 import {
   isCurrentRecognitionResult,
   isRecognitionActive,
-  recognitionBranch,
+  resetRecognitionForFilterChange,
   selectActivePrediction,
   selectUnifiedPrediction
 } from "./recognitionState.js";
@@ -178,8 +178,6 @@ function recognizeMotion(res){
     time: res.timestamp
   });
   const aspect = video.videoWidth / video.videoHeight;
-  const activeBranch = recognitionBranch(state);
-  const activeFrame = activeBranch === "raw" ? res.rawFrame : res.filteredFrame;
   const evaluationTime = res.timestamp;
   const analysisInterval = motion.armed ? 180 : 100;
   const comparisonDue = res.timestamp - motion.lastComparedAt >= 200;
@@ -188,9 +186,9 @@ function recognizeMotion(res){
   if (comparisonDue){
     staticRaw = classifyFrame(res.rawFrame, "raw", "static");
     staticFiltered = classifyFrame(res.filteredFrame, "filtered", "static");
-    staticMain = selectActivePrediction(staticRaw, staticFiltered, state.recognitionMode);
+    staticMain = selectActivePrediction(staticFiltered);
   } else {
-    staticMain = classifyFrame(activeFrame, activeBranch, "static");
+    staticMain = classifyFrame(res.filteredFrame, "filtered", "static");
   }
   if (res.timestamp - motion.lastEvaluatedAt < analysisInterval){
     if (!motion.segmentActive) ui.stability(staticMain, evaluationTime, generation);
@@ -295,7 +293,7 @@ function recognizeMotion(res){
       }
       const rawMotion = classifyFrame(query, "raw", "motion");
       const filteredMotion = classifyFrame(query, "filtered", "motion");
-      const motionMain = selectActivePrediction(rawMotion, filteredMotion, state.recognitionMode);
+      const motionMain = selectActivePrediction(filteredMotion);
       const selected = selectUnifiedPrediction(staticMain, motionMain);
       const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
       const reference = $("evaluationReference").value || selected?.label;
@@ -615,11 +613,12 @@ function resetTracking(){
     setNote("Mano o rostro requerido fuera de cámara");
   }
 }
-function resetRecognitionMode(){
+function resetForFilterChange(){
+  resetRecognitionForFilterChange(state);
   if (state.recognitionEnabled){
     signEl.textContent = "Reconocimiento activo";
     signEl.className = "sign idle";
-    metaEl.textContent = "Esperando una seña en el modo seleccionado.";
+    metaEl.textContent = "Esperando una seña con el filtro actualizado.";
   }
   holdBar.style.width = "0";
 }
@@ -684,6 +683,6 @@ document.addEventListener("keydown", e => {
 
 return {
   startMotion, tickMotion, capture, refreshKind, refreshButtons, resetTracking,
-  resetRecognitionMode
+  resetForFilterChange
 };
 }

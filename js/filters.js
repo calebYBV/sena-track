@@ -22,6 +22,14 @@ export function normalizeFilterConfig(config){
   };
 }
 
+export function normalizeActiveFilterConfig(config){
+  const candidate = { ...DEFAULT_FILTER_CONFIG, ...(config || {}) };
+  return normalizeFilterConfig({
+    ...candidate,
+    model: candidate.model === "off" ? DEFAULT_FILTER_CONFIG.model : candidate.model
+  });
+}
+
 const cloneLandmarks = points => points.map(({ x, y, z }) => ({ x, y, z }));
 const finite = value => Number.isFinite(value);
 const HEAD_ANGLE_FEATURES = new Set([29, 31]);

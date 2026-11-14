@@ -3,13 +3,12 @@ import assert from "node:assert/strict";
 import {
   isCurrentRecognitionResult,
   isRecognitionActive,
-  recognitionBranch,
-  resetRecognitionForModeChange,
+  resetRecognitionForFilterChange,
   selectUnifiedPrediction,
   selectActivePrediction,
-  shouldProcessEdo,
   shouldAutoAppendPhrase
 } from "../js/recognitionState.js";
+import { DEFAULT_FILTER_CONFIG, normalizeActiveFilterConfig } from "../js/filters.js";
 
 test("recognition is only active while the global toggle is enabled", () => {
   assert.equal(isRecognitionActive({ recognitionEnabled: false, motion: null }), false);
@@ -30,9 +29,9 @@ test("automatic phrase addition is ignored while recognition is disabled", () =>
   assert.equal(shouldAutoAppendPhrase(state, "Hola", 500), false);
 });
 
-test("recognition modes select one active branch and reset only incompatible state", () => {
+test("recognition selects only filtered predictions and resets temporal state on filter changes", () => {
   const state = {
-    recognitionMode: "edo",
+    recognitionMode: "mediapipe",
     recognitionGeneration: 4,
     recognitionEnabled: true,
     phrase: "Hola",
@@ -47,59 +46,45 @@ test("recognition modes select one active branch and reset only incompatible sta
       segmentActive: true
     }
   };
-  assert.equal(recognitionBranch(state), "filtered");
-  assert.equal(shouldProcessEdo(state), true);
-  assert.equal(selectActivePrediction({ label: "Raw" }, { label: "EDO" }, "edo").label, "EDO");
+  assert.equal(selectActivePrediction({ label: "EDO" }).label, "EDO");
   const generation = state.recognitionGeneration;
-  assert.equal(resetRecognitionForModeChange(state, "mediapipe"), true);
-  assert.equal(recognitionBranch(state), "raw");
-  assert.equal(shouldProcessEdo(state), true);
+  resetRecognitionForFilterChange(state);
   assert.equal(state.recognitionEnabled, true);
   assert.equal(state.phrase, "Hola");
-  assert.equal(state.committed, "Hola");
+  assert.equal(state.committed, null);
   assert.deepEqual(state.motion.frames, []);
   assert.equal(state.motion.armed, true);
   assert.equal(state.motion.segmentActive, false);
   assert.equal(state.motion.lastComparedAt, 0);
   assert.equal(state.cand, null);
   assert.equal(isCurrentRecognitionResult(state, generation), false);
-  assert.equal(resetRecognitionForModeChange(state, "mediapipe"), false);
-  assert.throws(() => resetRecognitionForModeChange(state, "invalid"), RangeError);
 });
 
-test("EDO frame work is skipped in idle Solo MediaPipe mode unless comparison is requested", () => {
+test("legacy Solo MediaPipe state cannot disable EDO frame processing", () => {
   const state = {
     recognitionMode: "mediapipe",
     recognitionEnabled: false,
     motion: null,
     capState: null,
-    filterConfig: { compareVisual: false }
+    filterConfig: { ...DEFAULT_FILTER_CONFIG, model: "off", compareVisual: false }
   };
-  assert.equal(shouldProcessEdo(state), false);
-  state.filterConfig.compareVisual = true;
-  assert.equal(shouldProcessEdo(state), true);
-  state.filterConfig.compareVisual = false;
-  state.recognitionEnabled = true;
-  assert.equal(shouldProcessEdo(state), true);
+  assert.equal(normalizeActiveFilterConfig(state.filterConfig).model, "first");
 });
 
-test("Solo MediaPipe always selects the raw prediction regardless of the EDO result", () => {
-  const raw = { label: "MediaPipe" };
+test("only an EDO prediction can be selected for recognition", () => {
   const filtered = { label: "EDO" };
-  assert.equal(selectActivePrediction(raw, filtered, "mediapipe"), raw);
-  assert.equal(selectActivePrediction(raw, null, "mediapipe"), raw);
-  assert.equal(selectActivePrediction(raw, filtered, "edo"), filtered);
+  assert.equal(selectActivePrediction(filtered), filtered);
+  assert.equal(selectActivePrediction(null), null);
 });
 
-test("stale recognition generations cannot append words after a mode switch", () => {
+test("stale recognition generations cannot append words after a filter change", () => {
   const state = {
     recognitionEnabled: true,
-    recognitionMode: "edo",
     recognitionGeneration: 1,
     lastRecognitionLabel: null,
     lastRecognitionAt: 0
   };
-  resetRecognitionForModeChange(state, "mediapipe");
+  resetRecognitionForFilterChange(state);
   assert.equal(shouldAutoAppendPhrase(state, "Hola", 1000, 1), false);
   assert.equal(shouldAutoAppendPhrase(state, "Hola", 1000, 2), true);
 });

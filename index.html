@@ -161,7 +161,7 @@
       <h2 id="generalSettingsTitle"><span class="card-icon" aria-hidden="true">⚙</span> A. Reconocimiento</h2>
       <details class="advanced-settings">
         <summary>Sensibilidad del reconocimiento (avanzado)</summary>
-        <p>La rama seleccionada controla la salida; estos umbrales ajustan la tolerancia de los clasificadores.</p>
+        <p>El reconocimiento utiliza siempre MediaPipe + EDO; estos umbrales ajustan la tolerancia de los clasificadores.</p>
         <div class="ctl">
           <div class="top"><label for="tol">Tolerancia de postura</label><span id="tolVal"></span></div>
           <input type="range" id="tol" min="0.3" max="1.5" step="0.05" value="0.8">
@@ -210,12 +210,7 @@
           </div>
           <span class="example-badge">Misma ejecución</span>
         </div>
-        <fieldset class="recognition-mode" role="radiogroup" aria-label="Rama activa del reconocimiento">
-          <legend>Rama que controla el reconocimiento</legend>
-          <label><input id="recognitionModeEdo" type="radio" name="recognitionMode" value="edo" checked><span>EDO activada</span></label>
-          <label><input id="recognitionModeMediaPipe" type="radio" name="recognitionMode" value="mediapipe"><span>Solo MediaPipe</span></label>
-        </fieldset>
-        <p class="active-recognition-mode" id="activeRecognitionMode" aria-live="polite">EDO controla el reconocimiento</p>
+        <p class="active-recognition-mode" id="activeRecognitionMode" aria-live="polite">MediaPipe + EDO controla el reconocimiento. MediaPipe sin filtro se muestra solo para comparación.</p>
         <label class="reference-control" for="evaluationReference">Seña de referencia</label>
         <select id="evaluationReference">
           <option value="">Candidata de la rama principal</option>
@@ -236,7 +231,7 @@
         <div class="reduction-readout"><span>Diferencia de distancia (Solo MediaPipe − EDO)</span><strong id="distanceReduction">No disponible</strong></div>
         <p class="comparison-message" id="comparisonStatus">Muestra las partes requeridas para comparar.</p>
         <p class="hint comparison-caveat">La diferencia compara distancia al mismo ejemplo y cuadro; no representa exactitud ni una probabilidad. MediaPipe puede incluir procesamiento interno.</p>
-        <p class="hint" id="comparisonNote">Las distancias y predicciones son experimentales y no intervienen en la selección de la rama activa.</p>
+        <p class="hint" id="comparisonNote">La rama sin filtro es exclusivamente experimental y nunca controla la traducción. Sin referencias raw verificables, la comparación no está disponible.</p>
       </section>
 
       <section class="card white tracking-metrics" aria-labelledby="trackingMetricsTitle">
@@ -287,7 +282,6 @@
             <li><strong>ωₙ</strong><span>Frecuencia natural.</span></li>
           </ul>
         </div>
-        <p id="offDescription" class="off-description" hidden>Se usan directamente las coordenadas de MediaPipe, sin filtro EDO adicional de la aplicación.</p>
       </div>
       <div class="evaluation-controls">
         <label>Modelo de filtro
@@ -328,7 +322,6 @@
           <p>Euler semiimplícito: primero se actualiza la velocidad y luego la posición. El tiempo entre cuadros se divide en subpasos conservadores.</p>
           <div class="calculation-formula">hMax = min(0.1/ωₙ, 0.1/(2ζωₙ)) · n = max(1, ceil(dt/hMax)) · h = dt/n<br>a = ωₙ²(u − y) − 2ζωₙv<br>v = v + h × a · y = y + h × v</div>
         </div>
-        <div id="offCalculation" class="calculation-copy" hidden><p>No se aplica una ecuación de filtro adicional; se devuelven las coordenadas de entrada.</p></div>
       </details>
     </section>
     <details class="card white experimental-evaluation">

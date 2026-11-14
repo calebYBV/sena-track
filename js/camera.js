@@ -3,9 +3,7 @@ import { createEdoFilter, calculateVibrationReduction, estimateTrackingLag } fro
 import { extractFaceFeatures } from "./holistic.js";
 import {
   isCurrentRecognitionResult,
-  recognitionBranch,
-  selectActivePrediction,
-  shouldProcessEdo
+  selectActivePrediction
 } from "./recognitionState.js";
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
@@ -161,37 +159,29 @@ function resetFilterHistory(){
   resetTrackingDiagnostics("Métricas reiniciadas al comenzar una captura.");
 }
 
-function resetRecognitionMode(){
-  edo.reset();
-  lastComparisonAt = -Infinity;
-  resetTrackingDiagnostics("Métricas reiniciadas al cambiar rama de reconocimiento.");
-}
-
 window.addEventListener("pagehide", stop);
 
-function drawFace(timestamp, activeIdentities, branch, processEdo){
+function drawFace(timestamp, activeIdentities){
   if (!faceLandmarker) return null;
   const result = faceLandmarker.detectForVideo(video, timestamp);
   if (!result.faceLandmarks.length) return null;
   const raw = result.faceLandmarks[0].map(({ x, y, z }) => ({ x, y, z }));
-  const filtered = processEdo ? edo.process(raw, "face", timestamp, state.filterConfig) : raw;
+  const filtered = edo.process(raw, "face", timestamp, state.filterConfig);
   activeIdentities.push("face");
-  const activeLandmarks = branch === "raw" ? raw : filtered;
-  const comparisonLandmarks = branch === "raw" ? filtered : raw;
-  drawing.drawConnectors(activeLandmarks, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
-  if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
-    drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
+  drawing.drawConnectors(filtered, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
+  if (state.filterConfig.compareVisual){
+    drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
   }
   const matrixData = result.facialTransformationMatrixes?.[0]?.data;
   const matrix = matrixData ? Array.from(matrixData) : null;
   const blendshapes = result.faceBlendshapes?.[0]?.categories;
   const rawFeatures = extractFaceFeatures(raw, blendshapes, matrix,
     video.videoWidth / video.videoHeight);
-  const filteredFeatures = rawFeatures && processEdo
+  const filteredFeatures = rawFeatures
     ? edo.process(rawFeatures.map(value => ({ x: value, y: 0, z: 0 })),
       "face:features", timestamp, state.filterConfig).map(point => point.x)
-    : rawFeatures;
-  if (filteredFeatures && processEdo) activeIdentities.push("face:features");
+    : null;
+  if (filteredFeatures) activeIdentities.push("face:features");
   return { rawLandmarks: raw, filteredLandmarks: filtered,
     rawFeatures, filteredFeatures };
 }
@@ -222,19 +212,14 @@ function compareStatic(track, timestamp){
   const rawFrame = track.rawFrame;
   const filteredFrame = track.filteredFrame;
   if (timestamp - lastComparisonAt < 200){
-    const branch = recognitionBranch(state);
-    const prediction = recognition.classifyFrame(
-      branch === "raw" ? rawFrame : filteredFrame, branch, "static");
-    return branch === "raw"
-      ? { rawPrediction: prediction, filteredPrediction: null }
-      : { rawPrediction: null, filteredPrediction: prediction };
+    const prediction = recognition.classifyFrame(filteredFrame, "filtered", "static");
+    return { rawPrediction: null, filteredPrediction: prediction };
   }
   lastComparisonAt = timestamp;
   const { rawPrediction, filteredPrediction, rawDistances, filteredDistances } =
     compareStaticFrames(rawFrame, filteredFrame);
   const requested = $("evaluationReference").value;
-  const mainPrediction = selectActivePrediction(
-    rawPrediction, filteredPrediction, state.recognitionMode);
+  const mainPrediction = selectActivePrediction(filteredPrediction);
   const reference = requested || mainPrediction?.label;
   const examples = state.samples.filter(sample => sample.l === reference);
   updateComparison({
@@ -249,10 +234,11 @@ function compareStatic(track, timestamp){
 /* ---------- Bucle principal ---------- */
 function processFrame(){
   if (video.readyState >= 2 && video.currentTime !== lastTime){
+    if (!["first", "second"].includes(state.filterConfig.model)){
+      throw new RangeError("El reconocimiento requiere un filtro EDO de primer o segundo orden.");
+    }
     const timestamp = performance.now();
     const recognitionGeneration = state.recognitionGeneration;
-    const activeBranch = recognitionBranch(state);
-    const processEdo = shouldProcessEdo(state);
     const results = landmarker.detectForVideo(video, timestamp);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const activeIdentities = [];
@@ -263,14 +249,12 @@ function processFrame(){
       const identity = `hand:${side}`;
       activeIdentities.push(identity);
       const rawLandmarks = results.landmarks[index].map(({ x, y, z }) => ({ x, y, z }));
-      const filteredLandmarks = processEdo
-        ? edo.process(rawLandmarks, identity, timestamp, state.filterConfig)
-        : rawLandmarks;
+      const filteredLandmarks = edo.process(rawLandmarks, identity, timestamp, state.filterConfig);
       handTracks[side] = { hand: side, rawLandmarks, filteredLandmarks };
     });
     const selectedIndex = chooseHand(results);
     const selected = selectedIndex === null ? null : handTracks[results.handedness[selectedIndex][0].categoryName];
-    const face = drawFace(timestamp, activeIdentities, activeBranch, processEdo);
+    const face = drawFace(timestamp, activeIdentities);
     const rawFrame = {
       hands: Object.fromEntries(Object.entries(handTracks).map(([side, track]) => [side, track.rawLandmarks])),
       faceLandmarks: face?.rawLandmarks,
@@ -307,13 +291,11 @@ function processFrame(){
     if (selected || face){
       missingFrames = 0;
       for (const track of Object.values(handTracks)){
-        const activeLandmarks = activeBranch === "raw"
-          ? track.rawLandmarks : track.filteredLandmarks;
-        const comparisonLandmarks = activeBranch === "raw"
-          ? track.filteredLandmarks : track.rawLandmarks;
+        const activeLandmarks = track.filteredLandmarks;
+        const comparisonLandmarks = track.rawLandmarks;
         drawing.drawConnectors(activeLandmarks, HandLandmarker.HAND_CONNECTIONS, { color: "#86e750", lineWidth: 4 });
         drawing.drawLandmarks(activeLandmarks, { color: "#ffffff", fillColor: "#0c71c6", radius: 4, lineWidth: 2 });
-        if (state.filterConfig.compareVisual && state.filterConfig.model !== "off"){
+        if (state.filterConfig.compareVisual){
           drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 2, lineWidth: 1 });
         }
       }
@@ -342,8 +324,7 @@ function processFrame(){
         const predictions = compareStatic({
           ...selected, rawFrame, filteredFrame
         }, timestamp);
-        const mainPrediction = selectActivePrediction(
-          predictions.rawPrediction, predictions.filteredPrediction, state.recognitionMode);
+        const mainPrediction = selectActivePrediction(predictions.filteredPrediction);
         if (!mainPrediction?.label && requiredMissing){
           $("sign").textContent = "Mano o rostro requerido fuera de cámara";
           $("sign").className = "sign idle";
@@ -519,5 +500,5 @@ async function start(){
   frameId = requestAnimationFrame(loop);
 }
 
-return { start, stop, resetFilters, resetFilterHistory, resetRecognitionMode };
+return { start, stop, resetFilters, resetFilterHistory };
 }

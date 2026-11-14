@@ -31,7 +31,11 @@ test("the interface has only translator and settings views with comparison contr
   const navigationViews = [...html.matchAll(/data-view="([^"]+)"/g)].map(match => match[1]);
   assert.deepEqual(views, ["translator", "settings"]);
   assert.deepEqual(navigationViews, ["translator", "settings"]);
-  assert.match(html, /recognitionModeEdo/);
-  assert.match(html, /recognitionModeMediaPipe/);
+  assert.doesNotMatch(html, /recognitionModeEdo|recognitionModeMediaPipe|name="recognitionMode"/);
+  assert.doesNotMatch(html, /EDO activada/);
+  assert.match(html, /id="filterModel"/);
+  assert.match(html, /<option value="first">Primer orden<\/option>/);
+  assert.match(html, /<option value="second">Segundo orden<\/option>/);
+  assert.doesNotMatch(html, /<option value="off">/);
   assert.match(html, /id="edoContents"/);
 });

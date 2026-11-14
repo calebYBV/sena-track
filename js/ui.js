@@ -5,7 +5,6 @@ import {
 } from "./recognition.js";
 import {
   isCurrentRecognitionResult,
-  resetRecognitionForModeChange,
   selectActivePrediction,
   shouldAutoAppendPhrase
 } from "./recognitionState.js";
@@ -201,7 +200,6 @@ function refreshFilterControls(){
   $("omegaControl").hidden = config.model !== "second";
   $("firstEquation").hidden = config.model !== "first";
   $("secondEquation").hidden = config.model !== "second";
-  $("offDescription").hidden = true;
   $("firstCalculation").hidden = config.model !== "first";
   $("secondCalculation").hidden = config.model !== "second";
   $("activeModelName").textContent = config.model === "first" ? "Filtro de primer orden" :
@@ -210,11 +208,9 @@ function refreshFilterControls(){
   $("filterModelDescription").textContent = config.model === "first"
     ? "Acerca gradualmente las coordenadas filtradas a las mediciones de MediaPipe para reducir vibraciones y saltos."
     : "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones.";
-  $("rawBranchLabel").textContent = "Solo MediaPipe";
-  $("filteredBranchLabel").textContent = "EDO";
-  $("compareVisualLabel").textContent = state.recognitionMode === "mediapipe"
-    ? "Mostrar puntos EDO comparados"
-    : "Mostrar puntos originales de MediaPipe";
+  $("rawBranchLabel").textContent = "MediaPipe · comparación";
+  $("filteredBranchLabel").textContent = "MediaPipe + EDO · reconocimiento";
+  $("compareVisualLabel").textContent = "Mostrar puntos originales para comparación";
 }
 for (const [id, key] of filterControls){
   const update = persist => {
@@ -222,7 +218,7 @@ for (const [id, key] of filterControls){
     state.filterConfig[key] = id === "compareVisual" ? element.checked :
       (key === "model" ? element.value : Number(element.value));
     refreshFilterControls();
-    state.onFilterChange?.();
+    if (key !== "compareVisual") state.onFilterChange?.();
     if (persist) void savePreferences();
   };
   if (id === "filterTau" || id === "filterZeta" || id === "filterOmega"){
@@ -270,46 +266,11 @@ function refreshReferences(){
 $("evaluationReference").addEventListener("change", renderComparison);
 refreshFilterControls();
 
-function refreshRecognitionMode(){
-  const mediapipe = state.recognitionMode === "mediapipe";
-  $("recognitionModeEdo").checked = !mediapipe;
-  $("recognitionModeMediaPipe").checked = mediapipe;
-  $("activeRecognitionMode").textContent = mediapipe
-    ? "Solo MediaPipe controla el reconocimiento"
-    : "EDO controla el reconocimiento";
-  $("compareVisualLabel").textContent = mediapipe
-    ? "Mostrar puntos EDO comparados"
-    : "Mostrar puntos originales de MediaPipe";
-}
-function setRecognitionMode(mode){
-  if (!resetRecognitionForModeChange(state, mode)){
-    refreshRecognitionMode();
-    return false;
-  }
-  refreshRecognitionMode();
-  state.onRecognitionModeChange?.(mode);
-  updateComparison({
-    detected: false,
-    reason: "Modo cambiado; esperando una nueva comparación con los mismos cuadros raw/EDO."
-  });
-  return true;
-}
-for (const id of ["recognitionModeEdo", "recognitionModeMediaPipe"]){
-  $(id).addEventListener("change", () => {
-    if (!$(id).checked) return;
-    const mode = id === "recognitionModeMediaPipe" ? "mediapipe" : "edo";
-    setRecognitionMode(mode);
-  });
-}
-refreshRecognitionMode();
-
 function setEvaluationEnabled(enabled){
   const panel = $("evaluationPanel");
   panel.classList.toggle("is-disabled", !enabled);
   panel.setAttribute("aria-disabled", String(!enabled));
   $("evaluationReference").disabled = !enabled;
-  $("recognitionModeEdo").disabled = !enabled;
-  $("recognitionModeMediaPipe").disabled = !enabled;
   $("compareVisual").disabled = !enabled;
   for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
   if (!enabled){
@@ -360,8 +321,7 @@ function renderComparison(){
     return;
   }
   const requested = $("evaluationReference").value;
-  const mainPrediction = selectActivePrediction(
-    result.rawPrediction, result.filteredPrediction, state.recognitionMode);
+  const mainPrediction = selectActivePrediction(result.filteredPrediction);
   const reference = requested || mainPrediction?.label ||
     result.filteredPrediction?.label || result.rawPrediction?.label;
   $("referenceLabel").textContent = requested
@@ -381,7 +341,7 @@ function renderComparison(){
       ? "Comparación no disponible para esta referencia."
       : "Guarda ejemplos de esta seña para calcular la comparación.";
     $("comparisonNote").textContent = result.referenceFilterMismatch
-      ? "La referencia heredada no conserva coordenadas raw pareadas. Se conserva por compatibilidad, pero su uso en Solo MediaPipe no es una comparación raw verificable."
+      ? "La referencia no se pudo emparejar o regenerar con el filtro activo. Se conserva por compatibilidad cuando es posible, pero esta comparación no está disponible; vuelve a capturar la seña."
       : requested
       ? "No hay ejemplos guardados de la seña seleccionada en esta modalidad."
       : "La candidata no confirma la intención del usuario.";
@@ -406,7 +366,7 @@ function renderComparison(){
       difference < 0 ? "EDO quedó más lejos de esta referencia" : "Las distancias son iguales";
   }
   const notes = [];
-  notes.push(`${state.recognitionMode === "mediapipe" ? "Solo MediaPipe" : "EDO"} controla el reconocimiento.`);
+  notes.push("MediaPipe + EDO controla el reconocimiento; la rama MediaPipe sin filtro solo se calcula para comparar.");
   notes.push("Ambas ramas usan el mismo cuadro y el mismo ejemplo guardado; la distancia no mide exactitud.");
   if (!requested) notes.push("La candidata no confirma la intención del usuario.");
   if (!requested && result.rawPrediction?.label && result.filteredPrediction?.label &&
@@ -417,7 +377,7 @@ function renderComparison(){
     notes.push("La referencia incluye ejemplos heredados de manos sin datos faciales; vuelve a capturarlos si quieres añadir rostro o ambas manos.");
   }
   if (result.referenceFilterMismatch){
-    notes.push("Algunas referencias heredadas no conservan coordenadas raw pareadas; se mantienen por compatibilidad, pero Solo MediaPipe puede usar su descriptor guardado de procesamiento histórico desconocido. No son referencias raw verificables ni comparaciones experimentales justas; vuelve a capturarlas para emparejarlas.");
+    notes.push("Algunas referencias heredadas o no regenerables se conservan cuando es posible, pero su procesamiento histórico no se puede verificar y no permite una comparación experimental justa. Vuelve a capturarlas para generar referencias coherentes.");
   }
   notes.push("Una reducción de distancia no garantiza un reconocimiento correcto.");
   $("comparisonNote").textContent = notes.join(" ");
@@ -496,6 +456,5 @@ function showNoHand(){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  refreshRecognitionMode, setRecognitionMode,
   setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
 }

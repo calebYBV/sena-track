@@ -4,7 +4,7 @@ import { createRecognition } from "./recognition.js";
 import { createTraining } from "./training.js";
 import { createCamera } from "./camera.js";
 import { initAuth } from "./auth.js";
-import { DEFAULT_FILTER_CONFIG, normalizeFilterConfig } from "./filters.js";
+import { DEFAULT_FILTER_CONFIG, normalizeActiveFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 import {
   activateAppView,
@@ -18,7 +18,7 @@ const state = {
   readoutLock: 0, cand: null, candCount: 0, candSince: null,
   committed: null, noHand: 0, noHandSince: null, neutralSince: null,
   ready: false, userId: null, filterConfig: { ...DEFAULT_FILTER_CONFIG },
-  recognitionMode: "edo", recognitionGeneration: 0,
+  recognitionGeneration: 0,
   ambiguityConfig: normalizeAmbiguityConfig(DEFAULT_AMBIGUITY_CONFIG),
   recognitionEnabled: false,
   recognitionTimers: new Set(),
@@ -43,16 +43,12 @@ const ui = createUI({
 });
 storage = createStorage({ state, dom, ui });
 storage.loadAll();
-state.filterConfig = normalizeFilterConfig(null);
+state.filterConfig = normalizeActiveFilterConfig(state.filterConfig);
 const recognition = createRecognition({ state, dom });
 ui.refreshReferences();
 ui.refreshFilterControls();
 const training = createTraining({ state, dom, ui, storage, recognition });
 const camera = createCamera({ state, dom, ui, training, recognition });
-state.onRecognitionModeChange = () => {
-  training.resetRecognitionMode();
-  camera.resetRecognitionMode();
-};
 function initializeNavigation(){
   const panels = [...document.querySelectorAll("[data-view-panel]")];
   const links = [...document.querySelectorAll(".quick-links [data-view]")];
@@ -85,8 +81,13 @@ function initializeNavigation(){
 const navigation = initializeNavigation();
 state.onFilterChange = () => {
   ui.refreshFilterControls();
+  training.resetForFilterChange();
   camera.resetFilters();
   recognition.prepareFilteredReferences(state.filterConfig);
+  ui.updateComparison({
+    detected: false,
+    reason: "Filtro cambiado; regenerando referencias compatibles desde las capturas raw."
+  });
 };
 state.onRecordingStart = camera.resetFilterHistory;
 training.refreshButtons();
