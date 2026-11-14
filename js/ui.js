@@ -9,10 +9,155 @@ import {
   shouldAutoAppendPhrase
 } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
+import { FACE_BLENDSHAPES } from "./holistic.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
 let lastComparison = null;
+const traceCanvas = $("traceChart");
+const traceContext = traceCanvas.getContext("2d");
+const traceSamples = [];
+let lastTraceUpdate = -Infinity;
+const HAND_POINT_NAMES = [
+  "Muñeca", "Pulgar · base", "Pulgar · nudillo", "Pulgar · articulación", "Pulgar · punta",
+  "Índice · base", "Índice · nudillo", "Índice · articulación", "Índice · punta",
+  "Medio · base", "Medio · nudillo", "Medio · articulación", "Medio · punta",
+  "Anular · base", "Anular · nudillo", "Anular · articulación", "Anular · punta",
+  "Meñique · base", "Meñique · nudillo", "Meñique · articulación", "Meñique · punta"
+];
+const FACE_POINTS = [[1, "Cabeza · centro"], [10, "Cabeza · frente"], [152, "Cabeza · mentón"],
+  [33, "Rostro · ojo izquierdo"], [263, "Rostro · ojo derecho"],
+  [61, "Rostro · comisura izquierda"], [291, "Rostro · comisura derecha"]];
+const FACE_GEOMETRY = [
+  "Proporción frente-mentón", "Apertura ojo izquierdo", "Apertura ojo derecho",
+  "Apertura párpado izquierdo", "Apertura párpado derecho", "Ancho de boca",
+  "Apertura de boca", "Proporción de boca"
+];
+function addTraceOption(value, label){
+  traceCanvas.previousElementSibling.add(new Option(label, value));
+}
+for (const side of ["Left", "Right"]){
+  const sideName = side === "Left" ? "izquierda" : "derecha";
+  HAND_POINT_NAMES.forEach((pointName, index) => {
+    for (const axis of ["x", "y", "z"]){
+      addTraceOption(`hand:${side}:${index}:${axis}`,
+        `Mano ${sideName} · ${pointName} · ${axis}`);
+    }
+  });
+}
+for (const [index, label] of FACE_POINTS){
+  for (const axis of ["x", "y", "z"]) addTraceOption(
+    `face:${index}:${axis}`, `${label} · ${axis}`);
+}
+FACE_BLENDSHAPES.forEach((name, index) =>
+  addTraceOption(`feature:${index}`, `Rostro · ${name} · puntuación`));
+FACE_GEOMETRY.forEach((name, index) =>
+  addTraceOption(`feature:${21 + index}`, `Rostro · ${name} · proporción`));
+for (const [index, name] of [[29, "yaw"], [30, "pitch"], [31, "roll"]]){
+  addTraceOption(`feature:${index}`, `Cabeza · ${name} / π`);
+}
+$("traceCoordinate").value = "hand:Left:0:x";
+
+function traceValue(frame, selection){
+  const [type, identity, pointIndex, axis] = selection.split(":");
+  if (type === "hand"){
+    const point = frame?.hands?.[identity]?.[Number(pointIndex)];
+    return Number.isFinite(point?.[axis]) ? point[axis] : null;
+  }
+  if (type === "face"){
+    const point = frame?.faceLandmarks?.[Number(identity)];
+    return Number.isFinite(point?.[pointIndex]) ? point[pointIndex] : null;
+  }
+  const value = frame?.faceFeatures?.[Number(identity)];
+  return Number.isFinite(value) ? value : null;
+}
+
+function drawCoordinateTrace(){
+  const bounds = traceCanvas.getBoundingClientRect();
+  if (!bounds.width) return;
+  const ratio = window.devicePixelRatio || 1;
+  traceCanvas.width = Math.round(bounds.width * ratio);
+  traceCanvas.height = Math.round(132 * ratio);
+  traceContext.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const width = bounds.width, height = 132;
+  const left = 36, right = width - 8, top = 8, bottom = height - 27;
+  traceContext.clearRect(0, 0, width, height);
+  traceContext.fillStyle = "#fbfeff";
+  traceContext.fillRect(0, 0, width, height);
+  traceContext.strokeStyle = "#dceaf2";
+  traceContext.lineWidth = 1;
+  for (let i = 0; i <= 3; i++){
+    const y = top + (bottom - top) * i / 3;
+    traceContext.beginPath();
+    traceContext.moveTo(left, y);
+    traceContext.lineTo(right, y);
+    traceContext.stroke();
+  }
+  if (!traceSamples.length) return;
+  const values = traceSamples.flatMap(sample =>
+    [sample.raw, sample.filtered]).filter(Number.isFinite);
+  if (!values.length) return;
+  let minimum = Math.min(...values), maximum = Math.max(...values);
+  if (maximum - minimum < 1e-9){
+    minimum -= 0.01;
+    maximum += 0.01;
+  } else {
+    const padding = (maximum - minimum) * 0.08;
+    minimum -= padding;
+    maximum += padding;
+  }
+  traceContext.fillStyle = "#54718a";
+  traceContext.font = "10px sans-serif";
+  traceContext.textAlign = "right";
+  traceContext.fillText(maximum.toFixed(3), left - 4, top + 4);
+  traceContext.fillText(minimum.toFixed(3), left - 4, bottom);
+  const startTime = traceSamples[0].time;
+  const endTime = traceSamples.at(-1).time;
+  traceContext.textAlign = "left";
+  traceContext.fillText(`-${((endTime - startTime) / 1000).toFixed(1)} s`, left, height - 4);
+  traceContext.textAlign = "right";
+  traceContext.fillText("0 s", right, height - 4);
+  const drawLine = (key, color) => {
+    traceContext.beginPath();
+    traceContext.strokeStyle = color;
+    traceContext.lineWidth = 1.8;
+    traceSamples.forEach((sample, index) => {
+      if (!Number.isFinite(sample[key])) return;
+      const x = endTime > startTime
+        ? left + (right - left) * (sample.time - startTime) / (endTime - startTime)
+        : (left + right) / 2;
+      const y = bottom - (sample[key] - minimum) / (maximum - minimum) * (bottom - top);
+      if (index === 0 || !Number.isFinite(traceSamples[index - 1][key])) traceContext.moveTo(x, y);
+      else traceContext.lineTo(x, y);
+    });
+    traceContext.stroke();
+  };
+  drawLine("raw", "#0c71c6");
+  drawLine("filtered", "#67a938");
+}
+
+function updateCoordinateTrace(rawFrame, filteredFrame, timestamp){
+  const selection = $("traceCoordinate").value;
+  const raw = traceValue(rawFrame, selection);
+  const filtered = traceValue(filteredFrame, selection);
+  if (Number.isFinite(raw) && Number.isFinite(filtered)){
+    traceSamples.push({ time: timestamp, raw, filtered });
+    if (traceSamples.length > 90) traceSamples.shift();
+    $("traceStatus").textContent = selection.startsWith("feature:")
+      ? "Puntuación/proporción facial o ángulo de cabeza en π; eje horizontal: tiempo real reciente."
+      : "Coordenada MediaPipe normalizada; eje horizontal: tiempo real reciente.";
+  } else if (timestamp - lastTraceUpdate >= 500){
+    $("traceStatus").textContent = "La coordenada seleccionada no está detectada en este momento.";
+  }
+  if (timestamp - lastTraceUpdate < 100) return;
+  lastTraceUpdate = timestamp;
+  drawCoordinateTrace();
+}
+$("traceCoordinate").addEventListener("change", () => {
+  traceSamples.length = 0;
+  $("traceStatus").textContent = "Esperando coordenadas de la opción seleccionada.";
+  drawCoordinateTrace();
+});
 function setNote(t){ noteEl.textContent = t; }
 function setSyncStatus(text, status = "saved"){
   const element = $("syncStatus");
@@ -210,7 +355,7 @@ function refreshFilterControls(){
     : "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones.";
   $("rawBranchLabel").textContent = "MediaPipe · comparación";
   $("filteredBranchLabel").textContent = "MediaPipe + EDO · reconocimiento";
-  $("compareVisualLabel").textContent = "Mostrar puntos originales para comparación";
+  $("compareVisualLabel").textContent = "Superponer coordenadas originales y EDO (más carga gráfica)";
 }
 for (const [id, key] of filterControls){
   const update = persist => {
@@ -394,6 +539,14 @@ function updateTrackingMetrics(metrics){
     : `${metrics.rawVibration.toFixed(5)} / ${metrics.filteredVibration.toFixed(5)} longitudes de palma/cuadro`;
   $("trackingLag").textContent = metrics.lagMs == null
     ? "No calculable" : `${metrics.lagMs.toFixed(0)} ms · estimación`;
+  const assessment = $("stabilityAssessment");
+  assessment.textContent = metrics.rawVibration == null || metrics.filteredVibration == null
+    ? "Sin datos suficientes para comparar estabilidad"
+    : metrics.filteredVibration < metrics.rawVibration
+      ? "EDO mejora la estabilidad observada en este segmento"
+      : metrics.filteredVibration > metrics.rawVibration
+        ? "EDO empeora la estabilidad observada en este segmento"
+        : "Sin cambio medible de estabilidad en este segmento";
   $("trackingMetricNote").textContent = metrics.note;
 }
 
@@ -456,5 +609,5 @@ function showNoHand(){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
+  updateCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
 }

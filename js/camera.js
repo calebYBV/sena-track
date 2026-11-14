@@ -10,7 +10,7 @@ const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
 const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
 const MODEL_FACE = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
-export function createCamera({ state, dom, ui, training, recognition }){
+export function createCamera({ state, dom, ui, training, recognition, evaluationCapture }){
 const { $, video, canvas, ctx, statusEl } = dom;
 const { renderList, show, stability, showNoHand, lostHand, updateComparison,
   updateTrackingMetrics, setNote, setEvaluationEnabled } = ui;
@@ -79,7 +79,7 @@ function updateTrackingDiagnostics(raw, filtered, timestamp){
   const lagMs = estimateTrackingLag(movingMeasurements);
   updateTrackingMetrics({
     rawVibration, filteredVibration, vibrationReduction, lagMs,
-    note: "Mano quieta: velocidad raw < 0,18 longitudes de palma/s durante al menos 15 cuadros. Retraso: correlación temporal de la trayectoria de muñeca; no es tiempo de cómputo ni de confirmación."
+    note: "Mano seguida: vibración = RMS del desplazamiento de sus 21 landmarks entre cuadros consecutivos, normalizado por el tamaño de palma raw (longitudes de palma/cuadro); se compara tras ≥15 cuadros con velocidad raw <0,18 longitudes de palma/s. Retardo = desfase de máxima correlación (≥0,6) de velocidades x/y de muñeca, hasta 10 cuadros; ms estimados, no tiempo de cómputo ni de confirmación."
   });
 }
 
@@ -136,6 +136,7 @@ function stop(){
   if (frameId !== null) cancelAnimationFrame(frameId);
   frameId = null;
   releaseMedia();
+  evaluationCapture.cancel("Cámara detenida; la captura de evaluación no se guardó.");
   resetTrackingDiagnostics("Cámara inactiva; datos de seguimiento no disponibles.");
   setEvaluationEnabled(true);
   if (interruptedCapture) setNote("Captura cancelada al salir del Traductor; no se guardó.");
@@ -170,7 +171,8 @@ function drawFace(timestamp, activeIdentities){
   activeIdentities.push("face");
   drawing.drawConnectors(filtered, FaceLandmarker.FACE_LANDMARKS_FACE_OVAL, { color: "#f2b705", lineWidth: 2 });
   if (state.filterConfig.compareVisual){
-    drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#0c71c6", radius: 1, lineWidth: 1 });
+    drawing.drawLandmarks(raw, { color: "#74e4ff", fillColor: "#74e4ff", radius: 1, lineWidth: 1 });
+    drawing.drawLandmarks(filtered, { color: "#86e750", fillColor: "#86e750", radius: 1, lineWidth: 1 });
   }
   const matrixData = result.facialTransformationMatrixes?.[0]?.data;
   const matrix = matrixData ? Array.from(matrixData) : null;
@@ -265,6 +267,7 @@ function processFrame(){
       faceLandmarks: face?.filteredLandmarks,
       faceFeatures: face?.filteredFeatures
     };
+    ui.updateCoordinateTrace(rawFrame, filteredFrame, timestamp);
     const presence = {
       Left: !!handTracks.Left,
       Right: !!handTracks.Right,
@@ -288,15 +291,22 @@ function processFrame(){
         faceAvailable: presence.face
       });
     }
+    evaluationCapture.captureFrame(rawFrame, presence, timestamp);
     if (selected || face){
       missingFrames = 0;
       for (const track of Object.values(handTracks)){
         const activeLandmarks = track.filteredLandmarks;
         const comparisonLandmarks = track.rawLandmarks;
         drawing.drawConnectors(activeLandmarks, HandLandmarker.HAND_CONNECTIONS, { color: "#86e750", lineWidth: 4 });
-        drawing.drawLandmarks(activeLandmarks, { color: "#ffffff", fillColor: "#0c71c6", radius: 4, lineWidth: 2 });
+        const filteredColor = state.filterConfig.compareVisual ? "#86e750" : "#ffffff";
+        drawing.drawLandmarks(activeLandmarks, {
+          color: filteredColor,
+          fillColor: state.filterConfig.compareVisual ? filteredColor : "#0c71c6",
+          radius: 4,
+          lineWidth: 2
+        });
         if (state.filterConfig.compareVisual){
-          drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#0c71c6", radius: 2, lineWidth: 1 });
+          drawing.drawLandmarks(comparisonLandmarks, { color: "#74e4ff", fillColor: "#74e4ff", radius: 2, lineWidth: 1 });
         }
       }
       if (state.motion){

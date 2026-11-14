@@ -3,6 +3,7 @@ import { createStorage } from "./storage.js";
 import { createRecognition } from "./recognition.js";
 import { createTraining } from "./training.js";
 import { createCamera } from "./camera.js";
+import { createEvaluationCapture } from "./evaluationCapture.js";
 import { initAuth } from "./auth.js";
 import { DEFAULT_FILTER_CONFIG, normalizeActiveFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
@@ -48,7 +49,23 @@ const recognition = createRecognition({ state, dom });
 ui.refreshReferences();
 ui.refreshFilterControls();
 const training = createTraining({ state, dom, ui, storage, recognition });
-const camera = createCamera({ state, dom, ui, training, recognition });
+const evaluationCapture = createEvaluationCapture({
+  state,
+  dom,
+  recognition,
+  onUpdate: ({ message, counts, recording }) => {
+    $("evalCaptureStatus").textContent =
+      `Capturas: entrenamiento ${counts.training} · validación ${counts.validation} · prueba ${counts.test}. ${message}`;
+    $("evalCaptureStart").disabled = recording;
+    $("evalCaptureCancel").disabled = !recording;
+    for (const id of ["evalTruth", "evalKind", "evalSplit", "evalDuration",
+      "evalParticipant", "evalSession"]){
+      $(id).disabled = recording;
+    }
+  }
+});
+state.evaluationCapture = evaluationCapture;
+const camera = createCamera({ state, dom, ui, training, recognition, evaluationCapture });
 function initializeNavigation(){
   const panels = [...document.querySelectorAll("[data-view-panel]")];
   const links = [...document.querySelectorAll(".quick-links [data-view]")];
@@ -95,6 +112,7 @@ initAuth({
   onAuthenticated: async user => {
     if (state.userId && state.userId !== user.id){
       camera.stop();
+      evaluationCapture.clear();
       storage.clearUser();
       ui.clearForUser();
       ui.refreshFilterControls();
@@ -110,6 +128,7 @@ initAuth({
   },
   onSignedOut: async () => {
     camera.stop();
+    evaluationCapture.clear();
     storage.clearUser();
     state.userId = null;
     ui.clearForUser();
