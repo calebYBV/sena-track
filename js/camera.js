@@ -138,6 +138,7 @@ function stop(){
   releaseMedia();
   evaluationCapture.cancel("Cámara detenida; la captura de evaluación no se guardó.");
   resetTrackingDiagnostics("Cámara inactiva; datos de seguimiento no disponibles.");
+  ui.resetCoordinateTrace();
   setEvaluationEnabled(true);
   if (interruptedCapture) setNote("Captura cancelada al salir del Traductor; no se guardó.");
   refreshButtons();
@@ -152,12 +153,14 @@ function resetFilters(){
   edo.reset();
   lastComparisonAt = -Infinity;
   resetTrackingDiagnostics("Métricas reiniciadas por cambio de filtro.");
+  ui.resetCoordinateTrace();
 }
 
 function resetFilterHistory(){
   edo.reset();
   lastComparisonAt = -Infinity;
   resetTrackingDiagnostics("Métricas reiniciadas al comenzar una captura.");
+  ui.resetCoordinateTrace();
 }
 
 window.addEventListener("pagehide", stop);
