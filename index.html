@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Outfit:wght@500;700&family=Baloo+2:wght@700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="./css/styles.css?v=stability-ui-2">
+<link rel="stylesheet" href="./css/styles.css?v=stability-ui-3">
 </head>
 <body>
 
@@ -244,7 +244,7 @@
             <div class="trace-legend"><span>MediaPipe</span><span>MediaPipe + EDO</span></div>
             <p class="hint" id="traceStatus">Inicia el reconocimiento para visualizar el análisis EDO.</p>
           </div>
-          <p class="hint trace-explanation">Media de desplazamientos RMS 2D de las regiones detectadas (ambas manos y rostro), con igual peso por región. El movimiento voluntario también se refleja: no equivale por sí solo a vibración, exactitud ni eficacia del filtro.</p>
+          <p class="hint trace-explanation">Movimiento general de las coordenadas detectadas.</p>
         </section>
         <section class="tracking-metrics" aria-labelledby="trackingMetricsTitle">
           <div class="metrics-heading">
@@ -255,53 +255,48 @@
             <article class="tracking-metric displacement-card">
               <div class="metric-title">
                 <h4>Desplazamiento general</h4>
-                <span>RMS 2D normalizado</span>
+                <span>RMS 2D · % de escala/s</span>
               </div>
               <div class="metric-branches">
                 <div class="metric-branch raw">
                   <span>MediaPipe original</span>
                   <strong id="displacementRawValue">—</strong>
-                  <small>% de escala/s</small>
                 </div>
                 <div class="metric-branch filtered">
                   <span>MediaPipe + EDO</span>
                   <strong id="displacementFilteredValue">—</strong>
-                  <small>% de escala/s</small>
                 </div>
               </div>
-              <p class="metric-comparison" id="displacementComparison">Inicia el reconocimiento para visualizar el análisis EDO.</p>
-              <small id="displacementAssessment">Inicia el reconocimiento para visualizar el análisis EDO.</small>
+              <p class="metric-comparison" id="displacementComparison">Esperando medición.</p>
+              <small id="displacementAssessment"></small>
             </article>
             <article class="tracking-metric vibration-card">
               <div class="metric-title">
                 <h4>Vibración</h4>
-                <span>Fluctuaciones durante segmentos estables</span>
+                <span>Ventana estable · % de escala</span>
               </div>
               <div class="metric-branches">
                 <div class="metric-branch raw">
                   <span>MediaPipe original</span>
                   <strong id="vibrationRawValue">—</strong>
-                  <small>% de escala</small>
                 </div>
                 <div class="metric-branch filtered">
                   <span>MediaPipe + EDO</span>
                   <strong id="vibrationFilteredValue">—</strong>
-                  <small>% de escala</small>
                 </div>
               </div>
-              <p class="metric-comparison" id="vibrationReduction">Inicia el reconocimiento para visualizar el análisis EDO.</p>
-              <small id="stabilityAssessment">Inicia el reconocimiento para visualizar el análisis EDO.</small>
+              <p class="metric-comparison" id="vibrationReduction">Mantén una región quieta para medir.</p>
+              <small id="stabilityAssessment"></small>
               <progress id="vibrationProgress" max="100" value="0" aria-label="Progreso de adquisición de vibración"></progress>
-              <small id="vibrationProgressText">Inicia el reconocimiento para visualizar el análisis EDO.</small>
+              <small id="vibrationProgressText"></small>
             </article>
           </div>
           <details class="analysis-notes">
             <summary>Notas del análisis</summary>
             <div>
               <p id="comparisonNote">Comparación no disponible.</p>
-              <p id="trackingMetricNote">El desplazamiento y la vibración residual son métricas distintas; ninguna mide por sí sola la exactitud del reconocimiento.</p>
+              <p id="trackingMetricNote">Desplazamiento y vibración son métricas distintas; no indican exactitud del reconocimiento.</p>
               <p id="activeRecognitionMode">MediaPipe + EDO controla el reconocimiento; MediaPipe sin filtro es solo experimental.</p>
-              <p>El desplazamiento es RMS de velocidad 2D en una ventana móvil. La vibración residual combina fluctuaciones del centroide y la geometría interna durante una ventana quieta; cada región (mano izquierda, mano derecha y rostro) pesa igual. La palma (landmarks 0–9) y el ancho facial (234–454) definen una escala raw compartida por ambas ramas. La quietud se estima mediante medianas temporales para tolerar ruido breve de landmarks y no identifica temblor fisiológico ni microgestos. MediaPipe puede suavizar internamente el rostro. Un menor desplazamiento no demuestra mayor exactitud.</p>
             </div>
           </details>
         </section>
@@ -441,33 +436,33 @@
 <script type="importmap">
 {
   "imports": {
-    "./js/app.js": "./js/app.js?v=stability-ui-2",
-    "./js/appAuth.js": "./js/appAuth.js?v=stability-ui-2",
-    "./js/auth.js": "./js/auth.js?v=stability-ui-2",
-    "./js/authBootstrap.js": "./js/authBootstrap.js?v=stability-ui-2",
-    "./js/camera.js": "./js/camera.js?v=stability-ui-2",
-    "./js/cameraLoader.js": "./js/cameraLoader.js?v=stability-ui-2",
-    "./js/evaluation.js": "./js/evaluation.js?v=stability-ui-2",
-    "./js/evaluationCapture.js": "./js/evaluationCapture.js?v=stability-ui-2",
-    "./js/filters.js": "./js/filters.js?v=stability-ui-2",
-    "./js/globalTrace.js": "./js/globalTrace.js?v=stability-ui-2",
-    "./js/holistic.js": "./js/holistic.js?v=stability-ui-2",
-    "./js/navigation.js": "./js/navigation.js?v=stability-ui-2",
-    "./js/recognition.js": "./js/recognition.js?v=stability-ui-2",
-    "./js/recognitionState.js": "./js/recognitionState.js?v=stability-ui-2",
-    "./js/sampleCount.js": "./js/sampleCount.js?v=stability-ui-2",
-    "./js/sampleFormat.js": "./js/sampleFormat.js?v=stability-ui-2",
-    "./js/storage.js": "./js/storage.js?v=stability-ui-2",
-    "./js/supabaseClient.js": "./js/supabaseClient.js?v=stability-ui-2",
-    "./js/supabaseConfig.example.js": "./js/supabaseConfig.example.js?v=stability-ui-2",
-    "./js/supabaseConfig.js": "./js/supabaseConfig.js?v=stability-ui-2",
-    "./js/trackingDiagnostics.js": "./js/trackingDiagnostics.js?v=stability-ui-2",
-    "./js/training.js": "./js/training.js?v=stability-ui-2",
-    "./js/ui.js": "./js/ui.js?v=stability-ui-2",
-    "./js/unifiedCapture.js": "./js/unifiedCapture.js?v=stability-ui-2"
+    "./js/app.js": "./js/app.js?v=stability-ui-3",
+    "./js/appAuth.js": "./js/appAuth.js?v=stability-ui-3",
+    "./js/auth.js": "./js/auth.js?v=stability-ui-3",
+    "./js/authBootstrap.js": "./js/authBootstrap.js?v=stability-ui-3",
+    "./js/camera.js": "./js/camera.js?v=stability-ui-3",
+    "./js/cameraLoader.js": "./js/cameraLoader.js?v=stability-ui-3",
+    "./js/evaluation.js": "./js/evaluation.js?v=stability-ui-3",
+    "./js/evaluationCapture.js": "./js/evaluationCapture.js?v=stability-ui-3",
+    "./js/filters.js": "./js/filters.js?v=stability-ui-3",
+    "./js/globalTrace.js": "./js/globalTrace.js?v=stability-ui-3",
+    "./js/holistic.js": "./js/holistic.js?v=stability-ui-3",
+    "./js/navigation.js": "./js/navigation.js?v=stability-ui-3",
+    "./js/recognition.js": "./js/recognition.js?v=stability-ui-3",
+    "./js/recognitionState.js": "./js/recognitionState.js?v=stability-ui-3",
+    "./js/sampleCount.js": "./js/sampleCount.js?v=stability-ui-3",
+    "./js/sampleFormat.js": "./js/sampleFormat.js?v=stability-ui-3",
+    "./js/storage.js": "./js/storage.js?v=stability-ui-3",
+    "./js/supabaseClient.js": "./js/supabaseClient.js?v=stability-ui-3",
+    "./js/supabaseConfig.example.js": "./js/supabaseConfig.example.js?v=stability-ui-3",
+    "./js/supabaseConfig.js": "./js/supabaseConfig.js?v=stability-ui-3",
+    "./js/trackingDiagnostics.js": "./js/trackingDiagnostics.js?v=stability-ui-3",
+    "./js/training.js": "./js/training.js?v=stability-ui-3",
+    "./js/ui.js": "./js/ui.js?v=stability-ui-3",
+    "./js/unifiedCapture.js": "./js/unifiedCapture.js?v=stability-ui-3"
   }
 }
 </script>
-<script type="module" src="./js/authBootstrap.js?v=stability-ui-2"></script>
+<script type="module" src="./js/authBootstrap.js?v=stability-ui-3"></script>
 </body>
 </html>

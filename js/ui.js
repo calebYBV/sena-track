@@ -471,12 +471,12 @@ function renderComparison(){
       : difference < 0
         ? `La distancia EDO es mayor en ${Math.abs(difference).toFixed(4)} unidades`
         : "Las distancias son iguales");
-    $("comparisonStatus").textContent = "Métrica calculada con el mismo segmento";
+    $("comparisonStatus").textContent = "Comparación actual";
   }
   $("comparisonNote").textContent = result.referenceFilterMismatch
     ? "Referencia heredada sin raw verificable."
     : result.legacyReference ? "Referencia heredada; compatibilidad limitada."
-      : "Misma referencia y cuadro para ambas ramas. La distancia no mide exactitud.";
+      : "Misma referencia y cuadro. La distancia no mide exactitud.";
 }
 function updateComparison(comparison){
   lastComparison = comparison;
@@ -488,36 +488,32 @@ function updateTrackingMetrics(metrics){
   $("displacementFilteredValue").textContent = metrics.displacementFiltered == null
     ? "—" : metrics.displacementFiltered.toFixed(2);
   $("displacementComparison").textContent = metrics.displacementChange == null
-    ? metrics.displacementRaw == null
-      ? metrics.displacementAssessment || metrics.status
-      : metrics.displacementAssessment || "Comparación porcentual no calculable"
-    : `Desplazamiento observado: ${metrics.displacementChange > 0 ? "+" : ""}` +
-      `${metrics.displacementChange.toFixed(1)} % con EDO`;
-  $("displacementAssessment").textContent = metrics.displacementRaw == null
     ? metrics.displacementAssessment || metrics.status
-    : metrics.displacementAssessment ||
-      "Base demasiado pequeña para calcular el porcentaje";
+    : Math.abs(metrics.displacementChange) <= 0.01
+      ? "Sin diferencia medible"
+      : `${Math.abs(metrics.displacementChange).toFixed(1)} % ` +
+        `${metrics.displacementChange > 0 ? "menos" : "más"} desplazamiento con EDO`;
+  $("displacementAssessment").textContent = "";
 
   $("vibrationRawValue").textContent = metrics.vibrationRaw == null
     ? "—" : metrics.vibrationRaw.toFixed(3);
   $("vibrationFilteredValue").textContent = metrics.vibrationFiltered == null
     ? "—" : metrics.vibrationFiltered.toFixed(3);
-  $("vibrationReduction").textContent = metrics.vibrationReduction == null
-    ? metrics.vibrationRaw == null
-      ? metrics.quietReason || metrics.status
-      : metrics.vibrationRaw <= 0.01
-      ? "Porcentaje no calculable: valor base demasiado pequeño"
-      : metrics.vibrationAssessment || "Porcentaje no calculable"
-    : `Variación: ${metrics.vibrationReduction > 0 ? "+" : ""}` +
-      `${metrics.vibrationReduction.toFixed(1)} % con EDO`;
-  $("stabilityAssessment").textContent = metrics.vibrationAssessment ||
-    (metrics.vibrationRaw == null ? metrics.quietReason : "Sin diferencia medible");
+  const hasVibrationMeasurement = metrics.vibrationRaw != null &&
+    metrics.vibrationFiltered != null;
+  $("vibrationReduction").textContent = !hasVibrationMeasurement
+    ? metrics.quietReason || metrics.status
+    : metrics.vibrationReduction == null
+      ? metrics.vibrationAssessment || "Sin diferencia medible"
+      : `${Math.abs(metrics.vibrationReduction).toFixed(1)} % ` +
+        `${metrics.vibrationReduction > 0 ? "menos" : "más"} vibración con EDO`;
+  $("stabilityAssessment").textContent = hasVibrationMeasurement
+    ? `${metrics.vibrationRegionCount} ${metrics.vibrationRegionCount === 1 ? "región incluida" : "regiones incluidas"}`
+    : "";
   $("vibrationProgress").value = metrics.vibrationProgress;
   $("vibrationProgress").setAttribute("aria-valuenow",
     String(metrics.vibrationProgress));
-  $("vibrationProgressText").textContent = metrics.vibrationRaw == null
-    ? metrics.quietReason
-    : "Ventana estable medida; el movimiento reiniciará la adquisición.";
+  $("vibrationProgressText").textContent = "";
   $("trackingMetricNote").textContent = metrics.note;
   $("trackingCalculationStatus").textContent = metrics.status;
 }

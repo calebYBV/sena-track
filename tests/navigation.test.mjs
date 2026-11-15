@@ -92,7 +92,7 @@ test("the interface has only translator and settings views with comparison contr
   assert.match(html, /id="edoContents"/);
   assert.doesNotMatch(html, /id="traceCoordinate"/);
   assert.match(html, /Seguimiento general en tiempo real/);
-  assert.match(html, /desplazamientos RMS 2D/);
+  assert.match(html, /Movimiento general de las coordenadas detectadas/);
   assert.match(html, /Análisis EDO en tiempo real/);
   const edoTemplate = html.slice(html.indexOf('<template id="edoContents">'),
     html.indexOf('<section class="card white edo-settings"'));
