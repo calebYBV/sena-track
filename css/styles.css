@@ -137,10 +137,26 @@ h2{font-family:var(--display);font-weight:700;font-size:1.25rem;margin:0 0 12px}
 .evaluation.is-disabled .comparison-message{font-size:1.05rem;color:var(--ink)}
 .tracking-metrics{padding:17px 20px;border-radius:20px;background:var(--mist)}
 .tracking-metrics>p.hint{margin:0 0 12px}
-.tracking-metric-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.tracking-metric-grid p{display:flex;flex-direction:column;gap:6px;margin:0;padding:12px;background:#fff;border-radius:14px}
-.tracking-metric-grid strong{font-size:.92rem}
-.tracking-metric-grid span{color:var(--sea);font-family:var(--display);font-size:1.15rem;font-weight:700}
+.tracking-metric-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.tracking-metric-grid .tracking-metric{display:flex;flex-direction:column;gap:10px;min-width:0;margin:0;padding:16px;border:1px solid #dceaf2;border-radius:16px;background:#fff}
+.metric-title{display:flex;flex-direction:column;gap:3px}
+.metric-title h4{margin:0;color:var(--ink);font-family:var(--display);font-size:1rem}
+.metric-title>span{color:var(--muted);font-size:.78rem}
+.metric-branches{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.metric-branch{display:flex;flex-direction:column;gap:3px;min-width:0;padding:10px;border-radius:11px;background:#f1f8fd}
+.metric-branch.raw{border:1px solid #d6eafa}
+.metric-branch.filtered{border:1px solid #d8ebcc;background:#f5fbf1}
+.metric-branch>span{color:var(--sea);font-size:.76rem;font-weight:700}
+.metric-branch.filtered>span{color:#4b7f2c}
+.metric-branch strong{color:#0c71c6;font-family:var(--display);font-size:1.15rem;font-variant-numeric:tabular-nums;line-height:1.2}
+.metric-branch.filtered strong{color:#4b7f2c}
+.metric-branch small{color:var(--muted);font-size:.7rem}
+.metric-comparison{margin:0;color:var(--sea);font-size:.8rem;font-weight:700;font-variant-numeric:tabular-nums}
+.tracking-metric>small{color:var(--muted);font-size:.74rem;line-height:1.35}
+.vibration-card progress{width:100%;height:6px;overflow:hidden;border:0;border-radius:99px;background:#e8eff3;accent-color:#4b7f2c}
+.vibration-card progress::-webkit-progress-bar{border-radius:99px;background:#e8eff3}
+.vibration-card progress::-webkit-progress-value{border-radius:99px;background:#70a94b}
+.vibration-card progress::-moz-progress-bar{border-radius:99px;background:#70a94b}
 .filter-preferences{margin-top:18px;padding:14px 16px;border:1px solid #c8e6f5;border-radius:16px;background:#fff}
 .evaluation-controls{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
 .evaluation-controls>label{display:flex;flex-direction:column;gap:5px;min-width:0;font-weight:700}
@@ -455,11 +471,15 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .tracking-metrics{min-width:0;padding:0!important;border-radius:0;background:transparent}
 .metrics-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
 .calculation-status{color:var(--muted);font-size:.66rem}
-.tracking-metric-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
-.tracking-metric-grid .tracking-metric{display:flex;flex-direction:column;gap:2px;min-width:0;margin:0;padding:8px;border:1px solid #e1edf4;border-radius:10px;background:#fbfdff}
-.tracking-metric strong{font-size:.7rem;line-height:1.25}
-.tracking-metric span{color:var(--sea);font-family:var(--display);font-size:.93rem;font-weight:700;line-height:1.2}
-.tracking-metric small{color:var(--muted);font-size:.63rem;line-height:1.2;overflow-wrap:anywhere}
+.tracking-metric-grid{gap:10px}
+.tracking-metric-grid .tracking-metric{gap:8px;padding:12px}
+.metric-title h4{font-size:.9rem}
+.metric-title>span{font-size:.68rem}
+.metric-branch{padding:8px}
+.metric-branch>span{font-size:.67rem}
+.metric-branch strong{font-size:1rem}
+.metric-branch small,.tracking-metric>small{font-size:.64rem;overflow-wrap:anywhere}
+.metric-comparison{font-size:.7rem}
 .analysis-notes{margin-top:7px}
 .analysis-notes summary,.evaluation-capture>summary{color:var(--sea);font-size:.72rem;font-weight:700;cursor:pointer}
 .analysis-notes>div{padding-top:4px}
@@ -569,7 +589,7 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
   .example-badge{font-size:.56rem}
   .comparison-branch{padding:7px}
   .branch-distance{font-size:.65rem}
-  .tracking-metric-grid{grid-template-columns:1fr 1fr}
+  .tracking-metric-grid{grid-template-columns:1fr}
   .evaluation-capture-fields{grid-template-columns:1fr}
   .evaluation-controls,.variables{grid-template-columns:1fr}
   .equation-math{font-size:.95rem}

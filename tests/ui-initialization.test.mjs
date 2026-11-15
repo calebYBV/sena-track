@@ -144,6 +144,68 @@ test("the general trace renders and reports motion using the current chart eleme
   assert.match(await read("index.html"), /MediaPipe original frente a MediaPipe filtrado con EDO/);
 });
 
+test("the stability panel contains only displacement and vibration cards", async () => {
+  const html = await read("index.html");
+  const panel = html.match(/<section class="tracking-metrics"[\s\S]*?<\/section>/)?.[0];
+  assert.ok(panel);
+  assert.match(panel, /Estabilidad del seguimiento/);
+  assert.match(panel, /Desplazamiento general/);
+  assert.match(panel, /RMS 2D normalizado/);
+  assert.match(panel, /Fluctuaciones durante segmentos estables/);
+  assert.equal([...panel.matchAll(/class="tracking-metric /g)].length, 2);
+  assert.doesNotMatch(panel, /trackingLag|retardo temporal|desfase/);
+  for (const id of ["displacementRawValue", "displacementFilteredValue",
+    "displacementComparison", "vibrationRawValue", "vibrationFilteredValue",
+    "vibrationReduction", "vibrationProgress", "vibrationProgressText"]){
+    assert.match(panel, new RegExp(`id="${id}"`));
+  }
+});
+
+test("tracking UI renders both branches, relative changes, and quiet-window progress", async () => {
+  const html = await read("index.html");
+  const { elements, ui } = installUI(html);
+  ui.updateTrackingMetrics({
+    displacementRaw: 2,
+    displacementFiltered: 2.4,
+    displacementChange: -20,
+    displacementAssessment: "Mayor desplazamiento observado con EDO",
+    vibrationRaw: 0.12,
+    vibrationFiltered: 0.08,
+    vibrationReduction: 33.3,
+    vibrationAssessment: "EDO reduce la vibración",
+    vibrationProgress: 60,
+    quietReason: "Segmento estable: 60%.",
+    status: "Analizando 1 región.",
+    note: "Nota de análisis"
+  });
+  assert.equal(elements.get("displacementRawValue").textContent, "2.00");
+  assert.equal(elements.get("displacementFilteredValue").textContent, "2.40");
+  assert.match(elements.get("displacementComparison").textContent, /-20\.0 %/);
+  assert.match(elements.get("displacementAssessment").textContent, /Mayor desplazamiento/);
+  assert.equal(elements.get("vibrationRawValue").textContent, "0.120");
+  assert.equal(elements.get("vibrationFilteredValue").textContent, "0.080");
+  assert.match(elements.get("vibrationReduction").textContent, /\+33\.3 %/);
+  assert.equal(elements.get("vibrationProgress").value, 60);
+  assert.equal(elements.get("vibrationProgress").getAttribute("aria-valuenow"), "60");
+
+  ui.updateTrackingMetrics({
+    displacementRaw: 0,
+    displacementFiltered: 0,
+    displacementChange: null,
+    displacementAssessment: "Porcentaje no calculable: valor base demasiado pequeño",
+    vibrationRaw: 0,
+    vibrationFiltered: 0,
+    vibrationReduction: null,
+    vibrationAssessment: "Sin diferencia medible",
+    vibrationProgress: 100,
+    quietReason: "Ventana quieta medida.",
+    status: "Analizando 1 región.",
+    note: "Nota de análisis"
+  });
+  assert.match(elements.get("displacementComparison").textContent, /porcentaje no calculable/i);
+  assert.match(elements.get("vibrationReduction").textContent, /base demasiado pequeñ/i);
+});
+
 test("the EDO template is mounted before createUI initializes its references", async () => {
   const app = await read("js/app.js");
   const html = await read("index.html");

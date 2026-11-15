@@ -1,5 +1,3 @@
-import { estimateTrackingLagDetails } from "./filters.js";
-
 const REGIONS = [
   ["hand:Left", frame => frame?.hands?.Left, (points, aspect) =>
     distance({ x: points[0]?.x * aspect, y: points[0]?.y },
@@ -20,26 +18,24 @@ const QUIET_WINDOW_MS = 1500;
 const QUIET_ENTRY_SPEED = 3;
 const QUIET_EXIT_SPEED = 6;
 const QUIET_DETECTION_WINDOW_MS = 500;
-const QUIET_ENTRY_DURATION_MS = 300;
-const QUIET_EXIT_DURATION_MS = 400;
 const MIN_QUIET_SAMPLES = 12;
 const MIN_QUIET_SPAN_MS = 1400;
-const LAG_WINDOW_MS = 4000;
 const METRIC_UPDATE_INTERVAL_MS = 200;
+const MIN_PERCENT_BASELINE = 0.01;
 const NO_TRACKING = "Muestra tus manos o rostro frente a la cámara.";
 const ANALYSIS_NOTE = "Desplazamiento: RMS de velocidad 2D, normalizado por escala de referencia raw " +
   "(palma mano 0–9; ancho facial 234–454), media con igual peso por región; unidad " +
   "% de escala/s. Vibración: RMS temporal de centroide y geometría interna, " +
   "combinadas cuadráticamente y normalizadas por la misma escala raw; igual peso por " +
   "región, expresada como % de escala en una ventana de 1.5 s. " +
-  "Quietud proxy: mediana de 500 ms del máximo RMS regional ≤3 %/s y 300 ms de entrada; " +
-  "salida si ≥6 %/s " +
-  "durante 400 ms; requiere 1.5 s y 12 observaciones. La variación es " +
-  "(raw−EDO)/raw×100; no se calcula si raw o la diferencia ≤0.01 % de escala. " +
-  "Este proxy no identifica " +
-  "temblor fisiológico ni distingue microgestos. Retardo: correlación de velocidades " +
-  "2D remuestreadas, ≥24 muestras y correlación ≥0.65; hasta 400 ms. No es latencia de " +
-  "cómputo, inferencia, confirmación ni una métrica de exactitud.";
+  "Quietud proxy: compara medianas de coordenadas por landmark en dos mitades de una " +
+  "ventana temporal de 500 ms; el máximo regional debe ser ≤3 %/s para entrar y sale " +
+  "al superar 6 %/s. " +
+  "Después requiere 1.5 s, al menos 12 observaciones y una ventana de ≥1.4 s. " +
+  "Las diferencias relativas usan (raw−EDO)/raw×100 y no se calculan si raw ≤0.01 " +
+  "en la unidad de su métrica o la diferencia absoluta es ≤0.01 puntos de esa unidad. " +
+  "Este proxy no identifica temblor fisiológico ni distingue microgestos; ninguna " +
+  "métrica mide exactitud.";
 
 function distance(a, b){
   if (!a || !b) return 0;
@@ -86,6 +82,49 @@ function median(values){
   const sorted = [...values].sort((a, b) => a - b);
   const middle = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function quietMotion(history, timestamp){
+  const start = timestamp - QUIET_DETECTION_WINDOW_MS;
+  const midpoint = start + QUIET_DETECTION_WINDOW_MS / 2;
+  const earlier = history.filter(sample => sample.time >= start && sample.time < midpoint);
+  const later = history.filter(sample => sample.time >= midpoint && sample.time <= timestamp);
+  const span = history.length > 1
+    ? history.at(-1).time - history[0].time : 0;
+  if (earlier.length < 3 || later.length < 3){
+    return { score: null, span };
+  }
+
+  const identities = [...later.at(-1).regions.keys()];
+  const regionalSpeeds = [];
+  for (const identity of identities){
+    const earlierTracks = earlier.map(sample => sample.regions.get(identity));
+    const laterTracks = later.map(sample => sample.regions.get(identity));
+    if (earlierTracks.some(track => !track) || laterTracks.some(track => !track)) continue;
+    const pointCount = laterTracks[0].points.length;
+    if (earlierTracks.some(track => track.points.length !== pointCount) ||
+        laterTracks.some(track => track.points.length !== pointCount)) continue;
+
+    const earlierTime = median(earlier.map(sample => sample.time));
+    const laterTime = median(later.map(sample => sample.time));
+    const elapsed = (laterTime - earlierTime) / 1000;
+    const scale = median([...earlierTracks, ...laterTracks].map(track => track.scale));
+    if (!(elapsed > 0) || !(scale > 0)) continue;
+
+    let squaredDistance = 0;
+    for (let index = 0; index < pointCount; index++){
+      const earlierX = median(earlierTracks.map(track => track.points[index].x));
+      const earlierY = median(earlierTracks.map(track => track.points[index].y));
+      const laterX = median(laterTracks.map(track => track.points[index].x));
+      const laterY = median(laterTracks.map(track => track.points[index].y));
+      squaredDistance += (laterX - earlierX) ** 2 + (laterY - earlierY) ** 2;
+    }
+    regionalSpeeds.push(100 * Math.sqrt(squaredDistance / pointCount) / scale / elapsed);
+  }
+  return {
+    score: regionalSpeeds.length ? Math.max(...regionalSpeeds) : null,
+    span
+  };
 }
 
 function meanSquare(values, weight = () => 1){
@@ -169,7 +208,6 @@ export function createTrackingDiagnostics(){
   let displacementSamples = [];
   let motionHistory = [];
   let quietSamples = [];
-  let lagByRegion = new Map();
   let quiet = false;
   let quietSince = null;
   let lastMetricsAt = -Infinity;
@@ -179,7 +217,6 @@ export function createTrackingDiagnostics(){
     displacementSamples = [];
     motionHistory = [];
     quietSamples = [];
-    lagByRegion = new Map();
     quiet = false;
     quietSince = null;
     lastMetricsAt = -Infinity;
@@ -206,9 +243,8 @@ export function createTrackingDiagnostics(){
       vibrationAssessment: null,
       vibrationProgress: 0,
       quietReason: "Mantén las manos o el rostro quietos para medir la vibración.",
-      lagMs: null,
-      lagReason: "Realiza un movimiento continuo con cambios de dirección para estimar el retardo.",
-      lagCorrelation: null,
+      displacementChange: null,
+      displacementAssessment: null,
       status,
       note: ANALYSIS_NOTE
     };
@@ -229,6 +265,24 @@ export function createTrackingDiagnostics(){
         weight: sample.weight
       })), sample => sample.weight)
       : null;
+    const displacementDifference = displacementRaw === null || displacementFiltered === null
+      ? null : displacementRaw - displacementFiltered;
+    let displacementAssessment = null;
+    if (displacementDifference !== null){
+      if (displacementRaw <= MIN_PERCENT_BASELINE){
+        displacementAssessment = "Porcentaje no calculable: valor base demasiado pequeño";
+      } else if (Math.abs(displacementDifference) <= MIN_PERCENT_BASELINE){
+        displacementAssessment = "Sin diferencia medible";
+      } else {
+        displacementAssessment = displacementDifference > 0
+          ? "Menor desplazamiento observado con EDO"
+          : "Mayor desplazamiento observado con EDO";
+      }
+    }
+    const displacementChange = displacementRaw === null ||
+      displacementRaw <= MIN_PERCENT_BASELINE || displacementDifference === null ||
+      Math.abs(displacementDifference) <= MIN_PERCENT_BASELINE
+      ? null : 100 * displacementDifference / displacementRaw;
 
     const quietDuration = quiet && quietSince !== null ? timestamp - quietSince : 0;
     const quietWindow = quietSamples.filter(sample =>
@@ -253,15 +307,11 @@ export function createTrackingDiagnostics(){
 
     let quietReason;
     if (!quiet){
-      const progress = motionScore !== null && motionScore <= QUIET_ENTRY_SPEED
-        ? Math.min(100, Math.round(100 * (motionHistory.at(-1).time -
-          motionHistory[0].time) / QUIET_ENTRY_DURATION_MS))
-        : 0;
-      quietReason = `Analizando quietud; mantén las regiones quietas. Movimiento normalizado ${motionScore?.toFixed(2) ??
-        "—"} %/s; ${motionScore !== null && motionScore > QUIET_ENTRY_SPEED
-        ? `supera el umbral de entrada de ${QUIET_ENTRY_SPEED} %/s.`
-        : `entrada ≤${QUIET_ENTRY_SPEED} %/s durante ${QUIET_ENTRY_DURATION_MS} ms.`} ` +
-        `Estabilidad: ${progress}%.`;
+      quietReason = motionScore === null
+        ? "Reuniendo observaciones para evaluar la quietud."
+        : motionScore > QUIET_ENTRY_SPEED
+          ? `Movimiento detectado (${motionScore.toFixed(2)} %/s); mantén las regiones quietas.`
+          : `Evaluando una ventana estable (${motionScore.toFixed(2)} %/s; umbral ≤${QUIET_ENTRY_SPEED} %/s).`;
     } else if (!hasQuietMeasurement){
       const progress = Math.min(100, Math.round(100 * quietDuration / QUIET_WINDOW_MS));
       quietReason = `Segmento estable: ${progress}% de ${QUIET_WINDOW_MS / 1000} s; ` +
@@ -271,33 +321,6 @@ export function createTrackingDiagnostics(){
         `${quietWindow.length} observaciones emparejadas · vibración residual.`;
     }
 
-    let bestLag = null;
-    let bestCorrelation = -Infinity;
-    let bestLagRegion = null;
-    let lagReason = motionScore === null || motionScore < QUIET_EXIT_SPEED
-      ? `Movimiento insuficiente (<${QUIET_EXIT_SPEED} %/s); realiza un movimiento ` +
-        "continuo con cambios de dirección para estimar el retardo."
-      : "Se requieren 24 muestras emparejadas por región.";
-    if (motionScore !== null && motionScore >= QUIET_EXIT_SPEED){
-      for (const identity of activeRegions){
-        const history = lagByRegion.get(identity) || [];
-        const result = estimateTrackingLagDetails(history);
-        if (result.lagMs !== null && result.correlation > bestCorrelation){
-          bestLag = result.lagMs;
-          bestCorrelation = result.correlation;
-          bestLagRegion = identity;
-        } else if (bestLag === null && result.reason){
-          lagReason = result.reason;
-        }
-      }
-    }
-    if (bestLag !== null){
-      const regionName = bestLagRegion === "hand:Left" ? "mano izquierda"
-        : bestLagRegion === "hand:Right" ? "mano derecha" : "rostro";
-      lagReason = `Estimación por correlación temporal de velocidades 2D · ` +
-        `${regionName} · ` +
-        `correlación ${bestCorrelation.toFixed(2)}.`;
-    }
     return {
       displacementRaw,
       displacementFiltered,
@@ -307,12 +330,12 @@ export function createTrackingDiagnostics(){
       vibrationFiltered,
       vibrationReduction,
       vibrationAssessment,
-      vibrationProgress: quiet && !hasQuietMeasurement
-        ? Math.min(100, Math.round(100 * quietDuration / QUIET_WINDOW_MS)) : 0,
+      vibrationProgress: quiet
+        ? Math.min(100, Math.round(100 * quietDuration / QUIET_WINDOW_MS))
+        : 0,
       quietReason,
-      lagMs: bestLag,
-      lagReason,
-      lagCorrelation: bestLag === null ? null : bestCorrelation,
+      displacementChange,
+      displacementAssessment,
       status: currentPairs
         ? `Analizando ${activeRegions.length} ${activeRegions.length === 1 ? "región" : "regiones"} ` +
           "con coordenadas emparejadas por cuadro."
@@ -375,7 +398,7 @@ export function createTrackingDiagnostics(){
 
     const dt = dtMs / 1000;
     const pairs = {};
-    let rawSpeedSum = 0, filteredSpeedSum = 0, motionScore = 0;
+    let rawSpeedSum = 0, filteredSpeedSum = 0;
     for (const identity of raw.keys()){
       const previousRaw = previous.raw.get(identity);
       const currentRaw = raw.get(identity);
@@ -416,7 +439,6 @@ export function createTrackingDiagnostics(){
       const filteredSpeed = 100 * Math.sqrt(filteredStepSquares / divisor) / dt;
       rawSpeedSum += rawSpeed;
       filteredSpeedSum += filteredSpeed;
-      motionScore = Math.max(motionScore, rawSpeed);
       pairs[identity] = {
         raw: rawShape,
         filtered: filteredShape,
@@ -424,25 +446,6 @@ export function createTrackingDiagnostics(){
         filteredCentroid: currentFiltered.centroid,
         scale: currentRaw.scale
       };
-      const lagHistory = lagByRegion.get(identity) || [];
-      const rawCenter = previous.raw.get(identity).centroid;
-      const filteredCenter = previous.filtered.get(identity).centroid;
-      lagHistory.push({
-        raw: { x: rawCenter.x, y: rawCenter.y },
-        filtered: { x: filteredCenter.x, y: filteredCenter.y },
-        time: previous.time,
-        aspect: 1
-      });
-      lagHistory.push({
-        raw: { x: currentRaw.centroid.x, y: currentRaw.centroid.y },
-        filtered: { x: currentFiltered.centroid.x, y: currentFiltered.centroid.y },
-        time: timestamp,
-        aspect: 1
-      });
-      const uniqueHistory = lagHistory.filter((sample, index) =>
-        index === 0 || sample.time > lagHistory[index - 1].time);
-      const retained = uniqueHistory.filter(sample => timestamp - sample.time <= LAG_WINDOW_MS);
-      lagByRegion.set(identity, retained);
     }
     const rawMotion = rawSpeedSum / raw.size;
     const filteredMotion = filteredSpeedSum / filtered.size;
@@ -454,24 +457,21 @@ export function createTrackingDiagnostics(){
     });
     displacementSamples = displacementSamples.filter(sample =>
       timestamp - sample.time <= DISPLACEMENT_WINDOW_MS);
-    motionHistory.push({ time: timestamp, score: motionScore });
+    motionHistory.push({ time: timestamp, regions: raw });
     motionHistory = motionHistory.filter(sample =>
       timestamp - sample.time <= QUIET_DETECTION_WINDOW_MS);
-    const detectionSpan = motionHistory.length > 1
-      ? motionHistory.at(-1).time - motionHistory[0].time : 0;
-    const robustMotion = median(motionHistory.map(sample => sample.score));
-    if (!quiet && detectionSpan >= QUIET_ENTRY_DURATION_MS &&
+    const { score: robustMotion, span: detectionSpan } = quietMotion(motionHistory, timestamp);
+    if (!quiet && detectionSpan >= QUIET_DETECTION_WINDOW_MS &&
         robustMotion !== null && robustMotion <= QUIET_ENTRY_SPEED){
       quiet = true;
       quietSince = timestamp;
       quietSamples = [];
-    } else if (quiet && detectionSpan >= QUIET_EXIT_DURATION_MS &&
-        robustMotion !== null && robustMotion >= QUIET_EXIT_SPEED){
+    } else if (quiet && robustMotion !== null && robustMotion >= QUIET_EXIT_SPEED){
       quiet = false;
       quietSince = null;
       quietSamples = [];
     }
-    if (quiet && motionScore <= QUIET_EXIT_SPEED){
+    if (quiet){
       quietSamples.push({ time: timestamp, weight: dt, regions: pairs });
       quietSamples = quietSamples.filter(sample =>
         timestamp - sample.time <= QUIET_WINDOW_MS);
