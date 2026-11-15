@@ -9,69 +9,16 @@ import {
   shouldAutoAppendPhrase
 } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
-import { FACE_BLENDSHAPES } from "./holistic.js";
+import { globalTraceDisplacement } from "./globalTrace.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
 let lastComparison = null;
 const traceCanvas = $("traceChart");
-const traceSelect = $("traceCoordinate");
 const traceContext = traceCanvas.getContext("2d");
 const traceSamples = [];
 let lastTraceUpdate = -Infinity;
-const HAND_POINT_NAMES = [
-  "Muñeca", "Pulgar · base", "Pulgar · nudillo", "Pulgar · articulación", "Pulgar · punta",
-  "Índice · base", "Índice · nudillo", "Índice · articulación", "Índice · punta",
-  "Medio · base", "Medio · nudillo", "Medio · articulación", "Medio · punta",
-  "Anular · base", "Anular · nudillo", "Anular · articulación", "Anular · punta",
-  "Meñique · base", "Meñique · nudillo", "Meñique · articulación", "Meñique · punta"
-];
-const FACE_POINTS = [[1, "Cabeza · centro"], [10, "Cabeza · frente"], [152, "Cabeza · mentón"],
-  [33, "Rostro · ojo izquierdo"], [263, "Rostro · ojo derecho"],
-  [61, "Rostro · comisura izquierda"], [291, "Rostro · comisura derecha"]];
-const FACE_GEOMETRY = [
-  "Proporción frente-mentón", "Apertura ojo izquierdo", "Apertura ojo derecho",
-  "Apertura párpado izquierdo", "Apertura párpado derecho", "Ancho de boca",
-  "Apertura de boca", "Proporción de boca"
-];
-function addTraceOption(value, label){
-  traceSelect.add(new Option(label, value));
-}
-for (const side of ["Left", "Right"]){
-  const sideName = side === "Left" ? "izquierda" : "derecha";
-  HAND_POINT_NAMES.forEach((pointName, index) => {
-    for (const axis of ["x", "y", "z"]){
-      addTraceOption(`hand:${side}:${index}:${axis}`,
-        `Mano ${sideName} · ${pointName} · ${axis}`);
-    }
-  });
-}
-for (const [index, label] of FACE_POINTS){
-  for (const axis of ["x", "y", "z"]) addTraceOption(
-    `face:${index}:${axis}`, `${label} · ${axis}`);
-}
-FACE_BLENDSHAPES.forEach((name, index) =>
-  addTraceOption(`feature:${index}`, `Rostro · ${name} · puntuación`));
-FACE_GEOMETRY.forEach((name, index) =>
-  addTraceOption(`feature:${21 + index}`, `Rostro · ${name} · proporción`));
-for (const [index, name] of [[29, "yaw"], [30, "pitch"], [31, "roll"]]){
-  addTraceOption(`feature:${index}`, `Cabeza · ${name} / π`);
-}
-traceSelect.value = "hand:Left:0:x";
-
-function traceValue(frame, selection){
-  const [type, identity, pointIndex, axis] = selection.split(":");
-  if (type === "hand"){
-    const point = frame?.hands?.[identity]?.[Number(pointIndex)];
-    return Number.isFinite(point?.[axis]) ? point[axis] : null;
-  }
-  if (type === "face"){
-    const point = frame?.faceLandmarks?.[Number(identity)];
-    return Number.isFinite(point?.[pointIndex]) ? point[pointIndex] : null;
-  }
-  const value = frame?.faceFeatures?.[Number(identity)];
-  return Number.isFinite(value) ? value : null;
-}
+let lastTraceFrame = null;
 
 function drawCoordinateTrace(){
   const bounds = traceCanvas.getBoundingClientRect();
@@ -98,15 +45,9 @@ function drawCoordinateTrace(){
   const values = traceSamples.flatMap(sample =>
     [sample.raw, sample.filtered]).filter(Number.isFinite);
   if (!values.length) return;
-  let minimum = Math.min(...values), maximum = Math.max(...values);
-  if (maximum - minimum < 1e-9){
-    minimum -= 0.01;
-    maximum += 0.01;
-  } else {
-    const padding = (maximum - minimum) * 0.08;
-    minimum -= padding;
-    maximum += padding;
-  }
+  // Displacement is a magnitude: anchor the chart at zero, not a drifting baseline.
+  const minimum = 0;
+  const maximum = Math.max(0.001, ...values) * 1.08;
   traceContext.fillStyle = "#54718a";
   traceContext.font = "10px sans-serif";
   traceContext.textAlign = "right";
@@ -138,27 +79,32 @@ function drawCoordinateTrace(){
 }
 
 function updateCoordinateTrace(rawFrame, filteredFrame, timestamp){
-  const selection = $("traceCoordinate").value;
-  const raw = traceValue(rawFrame, selection);
-  const filtered = traceValue(filteredFrame, selection);
-  if (Number.isFinite(raw) && Number.isFinite(filtered)){
-    traceSamples.push({ time: timestamp, raw, filtered });
-    if (traceSamples.length > 90) traceSamples.shift();
-    $("traceStatus").textContent = selection.startsWith("feature:")
-      ? "Característica facial · últimos segundos."
-      : "Coordenada normalizada · últimos segundos.";
-  } else if (timestamp - lastTraceUpdate >= 500){
-    $("traceStatus").textContent = "Coordenada no detectada.";
+  const aspect = video.videoHeight > 0 ? video.videoWidth / video.videoHeight : 1;
+  const change = lastTraceFrame && timestamp > lastTraceFrame.time &&
+    timestamp - lastTraceFrame.time <= 500
+    ? globalTraceDisplacement(
+      lastTraceFrame.raw, lastTraceFrame.filtered, rawFrame, filteredFrame, aspect)
+    : null;
+  lastTraceFrame = { raw: rawFrame, filtered: filteredFrame, time: timestamp };
+  if (change){
+    traceSamples.push({ time: timestamp, raw: change.raw, filtered: change.filtered });
+    const n = change.components.length;
+    $("traceStatus").textContent =
+      `${n} ${n === 1 ? "región seguida" : "regiones seguidas"} · desplazamiento RMS 2D/cuadro.`;
+  } else {
+    // Avoid connecting unrelated tracks when an object enters or leaves the frame.
+    traceSamples.push({ time: timestamp, raw: null, filtered: null });
+    const detected = Boolean(rawFrame?.hands?.Left?.length ||
+      rawFrame?.hands?.Right?.length || rawFrame?.faceLandmarks?.length);
+    $("traceStatus").textContent = detected
+      ? "Sincronizando puntos seguidos…"
+      : "Esperando manos o rostro detectados.";
   }
+  if (traceSamples.length > 90) traceSamples.shift();
   if (timestamp - lastTraceUpdate < 100) return;
   lastTraceUpdate = timestamp;
   drawCoordinateTrace();
 }
-traceSelect.addEventListener("change", () => {
-  traceSamples.length = 0;
-  $("traceStatus").textContent = "Esperando coordenadas.";
-  drawCoordinateTrace();
-});
 function setNote(t){ noteEl.textContent = t; }
 function setSyncStatus(text, status = "saved"){
   const element = $("syncStatus");
@@ -556,6 +502,11 @@ function updateTrackingMetrics(metrics, calculationStatus){
 }
 
 function clearForUser(){
+  lastTraceFrame = null;
+  lastTraceUpdate = -Infinity;
+  traceSamples.length = 0;
+  $("traceStatus").textContent = "Esperando manos o rostro detectados.";
+  drawCoordinateTrace();
   state.phrase = "";
   phraseEl.textContent = "";
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
