@@ -2,9 +2,9 @@ import { createUI } from "./ui.js";
 import { createStorage } from "./storage.js";
 import { createRecognition } from "./recognition.js";
 import { createTraining } from "./training.js";
-import { createCamera } from "./camera.js";
 import { createEvaluationCapture } from "./evaluationCapture.js";
-import { initAuth } from "./auth.js";
+import { createLazyCamera } from "./cameraLoader.js";
+import { createAppAuthHandlers } from "./appAuth.js";
 import { DEFAULT_FILTER_CONFIG, normalizeActiveFilterConfig } from "./filters.js";
 import { DEFAULT_AMBIGUITY_CONFIG, normalizeAmbiguityConfig } from "./recognition.js";
 import {
@@ -65,7 +65,33 @@ const evaluationCapture = createEvaluationCapture({
   }
 });
 state.evaluationCapture = evaluationCapture;
-const camera = createCamera({ state, dom, ui, training, recognition, evaluationCapture });
+const camera = createLazyCamera({
+  options: { state, dom, ui, training, recognition, evaluationCapture },
+  onLoading: () => {
+    statusEl.className = "status";
+    statusEl.classList.remove("hidden");
+    statusEl.textContent = "Cargando módulo de cámara y reconocimiento…";
+    $("cameraIndicatorText").textContent = "Cargando reconocimiento";
+  },
+  onUnavailable: error => {
+    console.error("No se pudo cargar el módulo de cámara y reconocimiento.", error);
+    statusEl.className = "status error";
+    statusEl.classList.remove("hidden");
+    statusEl.textContent =
+      `No se pudo cargar el módulo de reconocimiento (MediaPipe): ${error.message}. Puedes seguir usando tu cuenta y biblioteca; vuelve a entrar al Traductor para reintentar.`;
+    $("cameraIndicator").classList.add("has-error");
+    $("cameraIndicatorText").textContent = "Reconocimiento no disponible";
+  },
+  onStartError: error => {
+    console.error("No se pudo iniciar la cámara y el reconocimiento.", error);
+    statusEl.className = "status error";
+    statusEl.classList.remove("hidden");
+    statusEl.textContent =
+      `No fue posible iniciar la cámara: ${error.message}. Puedes seguir usando tu cuenta y biblioteca.`;
+    $("cameraIndicator").classList.add("has-error");
+    $("cameraIndicatorText").textContent = "Cámara no disponible";
+  }
+});
 function initializeNavigation(){
   const panels = [...document.querySelectorAll("[data-view-panel]")];
   const links = [...document.querySelectorAll(".quick-links [data-view]")];
@@ -108,32 +134,9 @@ state.onFilterChange = () => {
 };
 state.onRecordingStart = camera.resetFilterHistory;
 training.refreshButtons();
-initAuth({
-  onAuthenticated: async user => {
-    if (state.userId && state.userId !== user.id){
-      camera.stop();
-      evaluationCapture.clear();
-      storage.clearUser();
-      ui.clearForUser();
-      ui.refreshFilterControls();
-    }
-    state.userId = user.id;
-    ui.setSyncStatus("Cargando biblioteca…", "loading");
-    const loaded = await storage.loadUserLibrary(user.id);
-    if (loaded.cancelled || state.userId !== user.id) return;
-    ui.refreshReferences();
-    ui.refreshFilterControls();
-    training.refreshButtons();
-    if (navigation.current() === "translator") await camera.start();
-  },
-  onSignedOut: async () => {
-    camera.stop();
-    evaluationCapture.clear();
-    storage.clearUser();
-    state.userId = null;
-    ui.clearForUser();
-    ui.refreshFilterControls();
-    training.refreshButtons();
-    ui.setSyncStatus("Inicia sesión para sincronizar tu biblioteca.", "saved");
-  }
+
+const authHandlers = createAppAuthHandlers({
+  state, camera, evaluationCapture, storage, ui, training, navigation
 });
+export const onAuthenticated = authHandlers.onAuthenticated;
+export const onSignedOut = authHandlers.onSignedOut;
