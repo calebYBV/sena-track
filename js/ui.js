@@ -501,12 +501,16 @@ function updateTrackingMetrics(metrics, calculationStatus){
     (metrics.rawVibration != null || metrics.lagMs != null ? "Datos actualizados" : "Esperando segmento");
 }
 
-function clearForUser(){
+function resetCoordinateTrace(){
   lastTraceFrame = null;
   lastTraceUpdate = -Infinity;
   traceSamples.length = 0;
   $("traceStatus").textContent = "Esperando manos o rostro detectados.";
   drawCoordinateTrace();
+}
+
+function clearForUser(){
+  resetCoordinateTrace();
   state.phrase = "";
   phraseEl.textContent = "";
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -565,5 +569,5 @@ function showNoHand(){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  updateCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
+  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
 }
