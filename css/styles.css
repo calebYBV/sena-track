@@ -450,6 +450,7 @@ label.inline input{accent-color:var(--lime);margin-top:5px}
 .trace-legend span:before{width:9px;height:3px;border-radius:2px;background:#0c71c6;content:""}
 .trace-legend span+span:before{background:#67a938}
 .coordinate-trace .hint{margin:0;font-size:.64rem;line-height:1.25}
+.coordinate-trace .trace-explanation{margin-top:6px;color:var(--muted);font-size:.66rem;line-height:1.35}
 .evaluation.is-disabled{opacity:.55;filter:grayscale(.8)}
 .tracking-metrics{min-width:0;padding:0!important;border-radius:0;background:transparent}
 .metrics-heading{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:7px}
