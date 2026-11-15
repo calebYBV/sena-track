@@ -483,43 +483,55 @@ function updateComparison(comparison){
   renderComparison();
 }
 function updateTrackingMetrics(metrics){
-  $("displacementReadout").textContent =
-    metrics.displacementRaw == null || metrics.displacementFiltered == null
-      ? "Esperando cuadros emparejados"
-      : `MP ${metrics.displacementRaw.toFixed(2)} / +EDO ` +
-        `${metrics.displacementFiltered.toFixed(2)} % escala/s`;
-  $("displacementStatus").textContent = metrics.displacementRaw == null
-    ? metrics.status
-    : `RMS 2D normalizado · ${metrics.regionCount} ` +
-      `${metrics.regionCount === 1 ? "región" : "regiones"} · ` +
-      `${metrics.displacementSamples} cuadros recientes`;
+  $("displacementRawValue").textContent = metrics.displacementRaw == null
+    ? "—" : metrics.displacementRaw.toFixed(2);
+  $("displacementFilteredValue").textContent = metrics.displacementFiltered == null
+    ? "—" : metrics.displacementFiltered.toFixed(2);
+  $("displacementComparison").textContent = metrics.displacementChange == null
+    ? metrics.displacementRaw == null
+      ? metrics.displacementAssessment || metrics.status
+      : metrics.displacementAssessment || "Comparación porcentual no calculable"
+    : `Desplazamiento observado: ${metrics.displacementChange > 0 ? "+" : ""}` +
+      `${metrics.displacementChange.toFixed(1)} % con EDO`;
+  $("displacementAssessment").textContent = metrics.displacementRaw == null
+    ? metrics.displacementAssessment || metrics.status
+    : metrics.displacementAssessment ||
+      "Base demasiado pequeña para calcular el porcentaje";
+
+  $("vibrationRawValue").textContent = metrics.vibrationRaw == null
+    ? "—" : metrics.vibrationRaw.toFixed(3);
+  $("vibrationFilteredValue").textContent = metrics.vibrationFiltered == null
+    ? "—" : metrics.vibrationFiltered.toFixed(3);
   $("vibrationReduction").textContent = metrics.vibrationReduction == null
-    ? "Variación: no calculable"
+    ? metrics.vibrationRaw == null
+      ? metrics.quietReason || metrics.status
+      : metrics.vibrationRaw <= 0.01
+      ? "Porcentaje no calculable: valor base demasiado pequeño"
+      : metrics.vibrationAssessment || "Porcentaje no calculable"
     : `Variación: ${metrics.vibrationReduction > 0 ? "+" : ""}` +
-      `${metrics.vibrationReduction.toFixed(1)}%`;
-  $("vibrationDistances").textContent = metrics.rawVibration == null || metrics.filteredVibration == null
-    ? metrics.quietReason
-    : `MP ${metrics.rawVibration.toFixed(3)} / +EDO ` +
-      `${metrics.filteredVibration.toFixed(3)} % escala`;
-  $("trackingLag").textContent = metrics.lagMs == null
-    ? "No estimable" : `${metrics.lagMs.toFixed(0)} ms · estimación`;
-  $("trackingLagNote").textContent = metrics.lagReason;
+      `${metrics.vibrationReduction.toFixed(1)} % con EDO`;
   $("stabilityAssessment").textContent = metrics.vibrationAssessment ||
-    "Sin medición de vibración válida";
+    (metrics.vibrationRaw == null ? metrics.quietReason : "Sin diferencia medible");
+  $("vibrationProgress").value = metrics.vibrationProgress;
+  $("vibrationProgress").setAttribute("aria-valuenow",
+    String(metrics.vibrationProgress));
+  $("vibrationProgressText").textContent = metrics.vibrationRaw == null
+    ? metrics.quietReason
+    : "Ventana estable medida; el movimiento reiniciará la adquisición.";
   $("trackingMetricNote").textContent = metrics.note;
   $("trackingCalculationStatus").textContent = metrics.status;
 }
 
-function resetCoordinateTrace(){
+function resetCoordinateTrace(status = "Esperando manos o rostro detectados."){
   lastTraceFrame = null;
   lastTraceUpdate = -Infinity;
   traceSamples.length = 0;
-  $("traceStatus").textContent = "Esperando manos o rostro detectados.";
+  $("traceStatus").textContent = status;
   drawCoordinateTrace();
 }
 
 function clearForUser(){
-  resetCoordinateTrace();
+  resetCoordinateTrace("Inicia el reconocimiento para visualizar el análisis EDO.");
   state.phrase = "";
   phraseEl.textContent = "";
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();

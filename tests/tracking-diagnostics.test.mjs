@@ -2,7 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { DEFAULT_FILTER_CONFIG } from "../js/filters.js";
-import { createTrackingDiagnostics } from "../js/trackingDiagnostics.js";
+import {
+  createTrackingDiagnostics,
+  createTrackingDiagnosticsSession
+} from "../js/trackingDiagnostics.js";
 
 const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.06 };
 const dt = 1000 / 30;
@@ -69,6 +72,22 @@ function collectQuiet({ regions = ["left"], rawNoise = 0.00004,
     result = push(analyzer, raw, filtered, i * dt);
   }
   return { analyzer, result };
+}
+
+function collectQuietAtIntervals(intervalAt, duration = 5000){
+  const analyzer = createTrackingDiagnostics();
+  let time = 0, index = 0, result, maxProgress = 0;
+  const progressValues = [];
+  while (time <= duration){
+    const raw = frame({ left: hand(0.3, index, 0.00004) });
+    const filtered = frame({ left: hand(0.3, index, 0.00002) });
+    result = push(analyzer, raw, filtered, time);
+    maxProgress = Math.max(maxProgress, result.vibrationProgress);
+    progressValues.push(result.vibrationProgress);
+    time += intervalAt(index);
+    index++;
+  }
+  return { result, maxProgress, count: index, progressValues };
 }
 
 function collectSyntheticQuiet(makeLandmarks, rawAmplitude, filteredAmplitude){
@@ -161,6 +180,52 @@ test("face-only tracking uses face width as its normalization scale", () => {
   assert.match(result.note, /ancho facial/);
 });
 
+test("robust quiet-window acquisition tolerates normal frame-to-frame landmark jitter", () => {
+  const { result } = collectQuiet({
+    regions: ["left", "right", "face"],
+    rawNoise: 0.0002,
+    filteredNoise: 0.0001
+  });
+  assert.ok(result.vibrationRaw > result.vibrationFiltered);
+  assert.match(result.quietReason, /ventana quieta/i);
+});
+
+test("quiet acquisition completes after five seconds at 15, 24, 30, and 60 FPS", () => {
+  for (const fps of [15, 24, 30, 60]){
+    const { result, maxProgress, progressValues } =
+      collectQuietAtIntervals(() => 1000 / fps);
+    assert.ok(result.vibrationRaw !== null, `${fps}fps did not calculate vibration`);
+    assert.equal(result.vibrationProgress, 100);
+    assert.equal(maxProgress, 100);
+    assert.ok(progressValues.some(progress => progress > 0 && progress < 100));
+    assert.match(result.quietReason, /ventana quieta/i);
+  }
+});
+
+test("quiet acquisition tolerates irregular timestamps without requiring exact window endpoints", () => {
+  const { result, maxProgress, count, progressValues } = collectQuietAtIntervals(index =>
+    (1000 / 30) * (1 + 0.22 * Math.sin(index * 1.7)));
+  assert.ok(count > 140);
+  assert.ok(result.vibrationRaw !== null);
+  assert.equal(result.vibrationProgress, 100);
+  assert.equal(maxProgress, 100);
+  assert.ok(progressValues.some(progress => progress > 0 && progress < 100));
+});
+
+test("voluntary motion at camera frame rates does not qualify as a quiet segment", () => {
+  for (const fps of [15, 24, 30, 60]){
+    const analyzer = createTrackingDiagnostics();
+    const period = 1000 / fps;
+    let result;
+    for (let i = 0; i <= fps * 5; i++){
+      const time = i * period;
+      const raw = frame({ left: hand(trajectory(i, time), i) });
+      result = push(analyzer, raw, raw, time);
+    }
+    assert.equal(result.vibrationRaw, null, `${fps}fps produced false vibration`);
+  }
+});
+
 test("continuous voluntary motion updates displacement and does not qualify as quiet", () => {
   const analyzer = createTrackingDiagnostics();
   let result;
@@ -171,8 +236,7 @@ test("continuous voluntary motion updates displacement and does not qualify as q
   }
   assert.ok(result.displacementRaw > 0);
   assert.equal(result.vibrationRaw, null);
-  assert.match(result.quietReason, /Analizando quietud/);
-  assert.ok(Math.abs(result.lagMs - 2 * dt) < 1e-6);
+  assert.match(result.quietReason, /Movimiento detectado|Evaluando una ventana estable/);
 });
 
 test("general displacement reports known normalized 2D speeds in percent of region scale per second", () => {
@@ -185,6 +249,33 @@ test("general displacement reports known normalized 2D speeds in percent of regi
   }
   assert.ok(Math.abs(result.displacementRaw - 100) < 1e-8);
   assert.ok(Math.abs(result.displacementFiltered - 50) < 1e-8);
+  assert.ok(Math.abs(result.displacementChange - 50) < 1e-8);
+  assert.equal(result.displacementAssessment, "Menor desplazamiento observado con EDO");
+});
+
+test("relative displacement reports an increase with a negative signed difference", () => {
+  const analyzer = createTrackingDiagnostics();
+  let result;
+  for (let i = 0; i < 5; i++){
+    const raw = frame({ left: hand(0.3 + i * 0.0075, i) });
+    const filtered = frame({ left: hand(0.3 + i * 0.01125, i) });
+    result = push(analyzer, raw, filtered, i * 100);
+  }
+  assert.ok(Math.abs(result.displacementChange + 50) < 1e-8);
+  assert.equal(result.displacementAssessment, "Mayor desplazamiento observado con EDO");
+});
+
+test("relative displacement is not calculated for a near-zero baseline", () => {
+  const analyzer = createTrackingDiagnostics();
+  let result;
+  for (let i = 0; i < 5; i++){
+    const raw = frame({ left: hand(0.3 + i * 0.0000005, i) });
+    const filtered = frame({ left: hand(0.3 + i * 0.00000025, i) });
+    result = push(analyzer, raw, filtered, i * 100);
+  }
+  assert.ok(result.displacementRaw <= 0.01);
+  assert.equal(result.displacementChange, null);
+  assert.match(result.displacementAssessment, /valor base demasiado pequeño/);
 });
 
 test("alternating rest and movement clears old quiet evidence and reacquires a stable window", () => {
@@ -257,37 +348,6 @@ test("large same-region jumps reset continuity instead of linking swapped identi
   assert.match(result.status, /salto de identidad\/lateralidad/i);
 });
 
-test("uniform-time lag estimation is stable across frame rates and jittered timestamps", () => {
-  for (const fps of [15, 30, 60]){
-    const analyzer = createTrackingDiagnostics();
-    const period = 1000 / fps;
-    const count = fps * 4;
-    let result;
-    for (let i = 0; i < count; i++){
-      const time = i * period + (i % 3) * period * 0.025;
-      const rawX = trajectory(i, time);
-      const filteredX = trajectory(i, time - 80);
-      const raw = frame({ left: hand(rawX, i) });
-      const filtered = frame({ left: hand(filteredX, i) });
-      result = push(analyzer, raw, filtered, time);
-    }
-    assert.ok(result.lagMs >= 40 && result.lagMs <= 140,
-      `${fps}fps estimated ${result.lagMs}ms`);
-  }
-});
-
-test("constant-velocity motion has insufficient temporal information for lag", () => {
-  const analyzer = createTrackingDiagnostics();
-  let result;
-  for (let i = 0; i < 100; i++){
-    const raw = frame({ left: hand(0.2 + i * 0.0003, i) });
-    const filtered = frame({ left: hand(0.2 + i * 0.0003, i) });
-    result = push(analyzer, raw, filtered, i * dt);
-  }
-  assert.equal(result.lagMs, null);
-  assert.match(result.lagReason, /constante|cambios de velocidad/i);
-});
-
 test("the diagnostic reports lower observed vibration when the filtered branch is smoother", () => {
   const { result } = collectQuiet({ rawNoise: 0.00005, filteredNoise: 0.00001 });
   assert.ok(result.vibrationReduction > 0);
@@ -358,17 +418,99 @@ test("diagnostics produce measurements without any recognition-state input", () 
   assert.ok(result.vibrationRaw > 0);
 });
 
-test("the camera updates diagnostics outside recognition and resets them on stop/sign-out", async () => {
+test("tracking diagnostics no longer expose temporal-lag metrics", () => {
+  const { result } = collectQuiet({ regions: ["left"] });
+  assert.equal("lagMs" in result, false);
+  assert.equal("lagReason" in result, false);
+});
+
+test("diagnostic session gates acquisition, resets transitions, and rejects stale frames", () => {
+  const resets = [];
+  const updates = [];
+  const session = createTrackingDiagnosticsSession({
+    onReset: (reason, active) => resets.push({ reason, active }),
+    onUpdate: (...args) => updates.push(args)
+  });
+  const raw = frame({ left: hand(0.3, 0) });
+  assert.equal(session.update(raw, raw, 0), false);
+  assert.equal(updates.length, 0);
+
+  assert.equal(session.setActive(true), true);
+  const firstGeneration = session.generation();
+  assert.equal(session.update(raw, raw, 10, firstGeneration), true);
+  assert.equal(updates.length, 1);
+  assert.equal(session.setActive(false), true);
+  assert.equal(session.isActive(), false);
+  assert.equal(session.update(raw, raw, 20, firstGeneration), false);
+
+  assert.equal(session.setActive(true), true);
+  const secondGeneration = session.generation();
+  assert.notEqual(firstGeneration, secondGeneration);
+  assert.equal(session.update(raw, raw, 30, firstGeneration), false);
+  assert.equal(session.update(raw, raw, 40, secondGeneration), true);
+  assert.equal(updates.length, 2);
+  assert.deepEqual(resets.map(reset => reset.active), [true, false, true]);
+});
+
+test("stopping and restarting recognition starts a clean diagnostic measurement session", () => {
+  const analyzer = createTrackingDiagnostics();
+  let latest = null;
+  const session = createTrackingDiagnosticsSession({
+    onReset: reason => {
+      latest = analyzer.reset(reason);
+    },
+    onUpdate: (raw, filtered, time) => {
+      latest = push(analyzer, raw, filtered, time);
+    }
+  });
+  session.setActive(true);
+  const firstGeneration = session.generation();
+  for (let i = 0; i < 110; i++){
+    const raw = frame({ left: hand(0.3, i, 0.00004) });
+    const filtered = frame({ left: hand(0.3, i, 0.00002) });
+    session.update(raw, filtered, i * dt, firstGeneration);
+  }
+  assert.ok(latest.vibrationRaw > 0);
+
+  session.setActive(false);
+  assert.equal(latest.displacementRaw, null);
+  assert.equal(latest.vibrationRaw, null);
+  assert.equal(latest.vibrationProgress, 0);
+  assert.equal(session.update(frame({ left: hand(0.3, 111) }),
+    frame({ left: hand(0.3, 111) }), 4000, firstGeneration), false);
+
+  session.setActive(true);
+  const secondGeneration = session.generation();
+  const firstFrame = frame({ left: hand(0.3, 120) });
+  session.update(firstFrame, firstFrame, 10000, secondGeneration);
+  assert.equal(latest.displacementRaw, null);
+  assert.equal(latest.vibrationRaw, null);
+  for (let i = 1; i < 110; i++){
+    const raw = frame({ left: hand(0.3, 120 + i, 0.00004) });
+    const filtered = frame({ left: hand(0.3, 120 + i, 0.00002) });
+    session.update(raw, filtered, 10000 + i * dt, secondGeneration);
+  }
+  assert.ok(latest.vibrationRaw > 0);
+});
+
+test("camera gates diagnostic callbacks but keeps MediaPipe, EDO, and training capture in the frame loop", async () => {
   const camera = await readFile(new URL("../js/camera.js", import.meta.url), "utf8");
+  const training = await readFile(new URL("../js/training.js", import.meta.url), "utf8");
+  const app = await readFile(new URL("../js/app.js", import.meta.url), "utf8");
   const appAuth = await readFile(new URL("../js/appAuth.js", import.meta.url), "utf8");
   const processFrameAt = camera.indexOf("function processFrame()");
-  const updateAt = camera.indexOf(
-    "updateTrackingMeasurements(rawFrame, filteredFrame, timestamp)", processFrameAt
-  );
-  const captureFlagAt = camera.indexOf("const isCapturing =", updateAt);
-  assert.ok(updateAt >= 0 && captureFlagAt > updateAt);
-  assert.doesNotMatch(camera.slice(updateAt, captureFlagAt), /state\.recognitionEnabled/);
-  assert.match(camera, /resetTrackingDiagnostics\("Cámara inactiva/);
+  const processFrame = camera.slice(processFrameAt);
+  assert.match(processFrame, /landmarker\.detectForVideo\(video, timestamp\)/);
+  assert.match(processFrame, /edo\.process\(rawLandmarks, identity, timestamp, state\.filterConfig\)/);
+  assert.match(processFrame, /diagnosticsSession\.update\([\s\S]*?diagnosticsGeneration\s*\)/);
+  assert.match(camera, /onUpdate:\s*\(rawFrame, filteredFrame, timestamp\)\s*=>\s*\{\s*ui\.updateCoordinateTrace/);
+  assert.match(camera, /ui\.updateCoordinateTrace\(rawFrame, filteredFrame, timestamp\);\s*updateTrackingMeasurements\(rawFrame, filteredFrame, timestamp\);/);
+  assert.match(processFrame, /if \(isCapturing\)\s*\{\s*capture\(/);
+  assert.match(training, /state\.onRecognitionChange\?\.\(state\.recognitionEnabled\)/);
+  assert.match(training, /setRecognitionEnabled\(true\)/);
+  assert.match(app, /state\.onRecognitionChange = enabled => camera\.setDiagnosticsActive\(enabled\)/);
+  assert.match(camera, /diagnosticsSession\.setActive\(false\)/);
+  assert.match(camera, /diagnosticsSession\.reset\("Métricas reiniciadas por cambio de filtro\."\)/);
   assert.match(appAuth, /async onSignedOut\(\)\s*\{\s*camera\.stop\(\)/);
 });
 

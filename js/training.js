@@ -31,6 +31,7 @@ function scheduleRecognitionTimeout(callback, delay){
 }
 
 function setRecognitionEnabled(enabled){
+  const wasEnabled = !!state.recognitionEnabled;
   state.recognitionEnabled = !!enabled;
   if (!state.recognitionEnabled){
     clearRecognitionTimers();
@@ -38,6 +39,9 @@ function setRecognitionEnabled(enabled){
     state.cand = null; state.candCount = 0; state.committed = null;
     state.candSince = null; state.neutralSince = null; state.noHandSince = null;
     state.readoutLock = 0;
+  }
+  if (wasEnabled !== state.recognitionEnabled){
+    state.onRecognitionChange?.(state.recognitionEnabled);
   }
 }
 function filterMetadata(config){
@@ -104,11 +108,11 @@ function startMotion(purpose, label){
   }
   setNote("");
   if (purpose === "recognize"){
-    state.recognitionEnabled = true;
     state.motion = {
       purpose, phase: "rec", frames: [], lastEvaluatedAt: 0, lastComparedAt: 0,
       armed: true, unrecognizedSince: 0, segmentActive: false
     };
+    setRecognitionEnabled(true);
     refreshButtons();
     state.readoutLock = 0;
     signEl.textContent = "Reconocimiento activo";

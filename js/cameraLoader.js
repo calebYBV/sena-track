@@ -47,6 +47,9 @@ export function createLazyCamera({
       generation++;
       camera?.stop();
     },
+    setDiagnosticsActive(active){
+      camera?.setDiagnosticsActive(active);
+    },
     resetFilters(){ camera?.resetFilters(); },
     resetFilterHistory(){ camera?.resetFilterHistory(); }
   };
