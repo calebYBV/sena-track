@@ -29,8 +29,9 @@ const METRIC_UPDATE_INTERVAL_MS = 200;
 const NO_TRACKING = "Muestra tus manos o rostro frente a la cámara.";
 const ANALYSIS_NOTE = "Desplazamiento: RMS de velocidad 2D, normalizado por escala de referencia raw " +
   "(palma mano 0–9; ancho facial 234–454), media con igual peso por región; unidad " +
-  "% de escala/s. Vibración: RMS temporal de fluctuación landmark tras retirar " +
-  "desplazamiento común de la región, expresado como % de escala; ventana de 1.5 s. " +
+  "% de escala/s. Vibración: RMS temporal de centroide y geometría interna, " +
+  "combinadas cuadráticamente y normalizadas por la misma escala raw; igual peso por " +
+  "región, expresada como % de escala en una ventana de 1.5 s. " +
   "Quietud proxy: mediana de 500 ms del máximo RMS regional ≤3 %/s y 300 ms de entrada; " +
   "salida si ≥6 %/s " +
   "durante 400 ms; requiere 1.5 s y 12 observaciones. La variación es " +
@@ -104,8 +105,9 @@ function vibrationRms(samples, regionIds, branch){
   for (const identity of regionIds){
     const observations = samples.map(sample => ({
       values: sample.regions[identity]?.[branch],
+      centroid: sample.regions[identity]?.[`${branch}Centroid`],
       weight: sample.weight
-    })).filter(item => item.values && item.weight > 0);
+    })).filter(item => item.values && item.centroid && item.weight > 0);
     if (observations.length < MIN_QUIET_SAMPLES) return null;
     const pointCount = observations[0].values.length;
     if (observations.some(item => item.values.length !== pointCount)) return null;
@@ -129,16 +131,26 @@ function vibrationRms(samples, regionIds, branch){
       mean[0] /= totalWeight;
       mean[1] /= totalWeight;
     }
-    let variance = 0;
+    const centroidMean = observations.reduce((mean, observation) => ({
+      x: mean.x + observation.centroid.x * observation.weight / totalWeight,
+      y: mean.y + observation.centroid.y * observation.weight / totalWeight
+    }), { x: 0, y: 0 });
+    let shapeVariance = 0;
+    let centroidVariance = 0;
     for (const observation of observations){
       observation.values.forEach((point, index) => {
-        variance += observation.weight * (
+        shapeVariance += observation.weight * (
           (point.x - means[index][0]) ** 2 + (point.y - means[index][1]) ** 2
         );
       });
+      centroidVariance += observation.weight * (
+        (observation.centroid.x - centroidMean.x) ** 2 +
+        (observation.centroid.y - centroidMean.y) ** 2
+      );
     }
-    const rms = Math.sqrt(variance / (totalWeight * pointCount * scale ** 2));
-    regionVariances.push(rms < 1e-10 ? 0 : rms ** 2);
+    const normalizedVariance = (centroidVariance + shapeVariance / pointCount) /
+      (totalWeight * scale ** 2);
+    regionVariances.push(normalizedVariance < 1e-20 ? 0 : normalizedVariance);
   }
   return regionVariances.length
     ? 100 * Math.sqrt(regionVariances.reduce((sum, value) => sum + value, 0) /
@@ -396,8 +408,8 @@ export function createTrackingDiagnostics(){
         filteredStepSquares += filteredDx ** 2 + filteredDy ** 2;
         rawShape.push({ x: point.x - currentRaw.centroid.x,
           y: point.y - currentRaw.centroid.y });
-        filteredShape.push({ x: filteredPoint.x - currentRaw.centroid.x,
-          y: filteredPoint.y - currentRaw.centroid.y });
+        filteredShape.push({ x: filteredPoint.x - currentFiltered.centroid.x,
+          y: filteredPoint.y - currentFiltered.centroid.y });
       });
       const divisor = currentRaw.points.length;
       const rawSpeed = 100 * Math.sqrt(rawStepSquares / divisor) / dt;
@@ -405,7 +417,13 @@ export function createTrackingDiagnostics(){
       rawSpeedSum += rawSpeed;
       filteredSpeedSum += filteredSpeed;
       motionScore = Math.max(motionScore, rawSpeed);
-      pairs[identity] = { raw: rawShape, filtered: filteredShape, scale: currentRaw.scale };
+      pairs[identity] = {
+        raw: rawShape,
+        filtered: filteredShape,
+        rawCentroid: currentRaw.centroid,
+        filteredCentroid: currentFiltered.centroid,
+        scale: currentRaw.scale
+      };
       const lagHistory = lagByRegion.get(identity) || [];
       const rawCenter = previous.raw.get(identity).centroid;
       const filteredCenter = previous.filtered.get(identity).centroid;

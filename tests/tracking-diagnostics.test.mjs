@@ -71,6 +71,36 @@ function collectQuiet({ regions = ["left"], rawNoise = 0.00004,
   return { analyzer, result };
 }
 
+function collectSyntheticQuiet(makeLandmarks, rawAmplitude, filteredAmplitude){
+  const analyzer = createTrackingDiagnostics();
+  let result;
+  for (let i = 0; i < 100; i++){
+    const raw = frame({ left: makeLandmarks(i, rawAmplitude) });
+    const filtered = frame({ left: makeLandmarks(i, filteredAmplitude) });
+    result = push(analyzer, raw, filtered, i * dt);
+  }
+  return result;
+}
+
+function translatedHand(frameIndex, amplitude){
+  const phase = frameIndex * 1.71;
+  const dx = amplitude * Math.sin(phase);
+  const dy = amplitude * Math.cos(phase * 0.73);
+  return hand(0.3, 0).map(point => ({
+    ...point,
+    x: point.x + dx,
+    y: point.y + dy
+  }));
+}
+
+function internallyVaryingHand(frameIndex, amplitude){
+  const delta = amplitude * Math.sin(frameIndex * 1.71);
+  return hand(0.3, 0).map((point, index) => ({
+    ...point,
+    x: point.x + (index === 1 ? delta : index === 2 ? -delta : 0)
+  }));
+}
+
 function trajectory(index, time = index * dt){
   return 0.5 + 0.035 * Math.sin(time / 155) + 0.018 * Math.sin(time / 61);
 }
@@ -88,6 +118,40 @@ test("two quiet hands are measured together with equal regional weighting", () =
   assert.equal(result.regionCount, 2);
   assert.ok(result.vibrationRaw > result.vibrationFiltered);
   assert.match(result.status, /2 regiones/);
+});
+
+test("vibration normalization gives a hand and a higher-landmark-count face equal regional weight", () => {
+  const aspect = 4 / 3;
+  const handPoints = hand(0.3, 0);
+  const facePoints = face(0.5, 0);
+  const handScale = Math.hypot(
+    (handPoints[0].x - handPoints[9].x) * aspect,
+    handPoints[0].y - handPoints[9].y
+  );
+  const faceScale = Math.hypot(
+    (facePoints[234].x - facePoints[454].x) * aspect,
+    facePoints[234].y - facePoints[454].y
+  );
+  const translate = (points, scale, amplitude, index) => {
+    const dx = amplitude * scale / aspect * Math.sin(index * 1.71);
+    return points.map(point => ({ ...point, x: point.x + dx }));
+  };
+  const handAnalyzer = createTrackingDiagnostics();
+  const combinedAnalyzer = createTrackingDiagnostics();
+  let handResult, combinedResult;
+  for (let i = 0; i < 100; i++){
+    const rawHand = translate(handPoints, handScale, 0.0004, i);
+    const filteredHand = translate(handPoints, handScale, 0.00004, i);
+    const rawFace = translate(facePoints, faceScale, 0.0004, i);
+    const filteredFace = translate(facePoints, faceScale, 0.00004, i);
+    handResult = push(handAnalyzer, frame({ left: rawHand }),
+      frame({ left: filteredHand }), i * dt, config, aspect);
+    combinedResult = push(combinedAnalyzer,
+      frame({ left: rawHand, facePoints: rawFace }),
+      frame({ left: filteredHand, facePoints: filteredFace }), i * dt, config, aspect);
+  }
+  assert.ok(Math.abs(combinedResult.vibrationRaw - handResult.vibrationRaw) < 1e-9);
+  assert.ok(Math.abs(combinedResult.vibrationFiltered - handResult.vibrationFiltered) < 1e-9);
 });
 
 test("face-only tracking uses face width as its normalization scale", () => {
@@ -232,6 +296,36 @@ test("the diagnostic reports lower observed vibration when the filtered branch i
 
 test("the diagnostic reports greater observed vibration when the filtered branch is noisier", () => {
   const { result } = collectQuiet({ rawNoise: 0.00002, filteredNoise: 0.00008 });
+  assert.ok(result.vibrationReduction < 0);
+  assert.equal(result.vibrationAssessment, "EDO aumenta la vibración");
+});
+
+test("common landmark translation noise is measured and EDO reduction is reflected", () => {
+  const result = collectSyntheticQuiet(translatedHand, 0.00003, 0.000005);
+  assert.ok(result.vibrationRaw > 0.01);
+  assert.ok(result.vibrationFiltered < result.vibrationRaw);
+  assert.ok(result.vibrationReduction > 0);
+  assert.equal(result.vibrationAssessment, "EDO reduce la vibración");
+});
+
+test("common landmark translation noise reflects vibration introduced by EDO", () => {
+  const result = collectSyntheticQuiet(translatedHand, 0.00001, 0.00005);
+  assert.ok(result.vibrationFiltered > result.vibrationRaw);
+  assert.ok(result.vibrationReduction < 0);
+  assert.equal(result.vibrationAssessment, "EDO aumenta la vibración");
+});
+
+test("internal landmark variation with a stable centroid is measured and reduced by EDO", () => {
+  const result = collectSyntheticQuiet(internallyVaryingHand, 0.0001, 0.00001);
+  assert.ok(result.vibrationRaw > 0.01);
+  assert.ok(result.vibrationFiltered < result.vibrationRaw);
+  assert.ok(result.vibrationReduction > 0);
+  assert.equal(result.vibrationAssessment, "EDO reduce la vibración");
+});
+
+test("internal landmark variation with a stable centroid reflects vibration introduced by EDO", () => {
+  const result = collectSyntheticQuiet(internallyVaryingHand, 0.00005, 0.0001);
+  assert.ok(result.vibrationFiltered > result.vibrationRaw);
   assert.ok(result.vibrationReduction < 0);
   assert.equal(result.vibrationAssessment, "EDO aumenta la vibración");
 });
