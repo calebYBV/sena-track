@@ -237,16 +237,14 @@
         </div>
         <section class="coordinate-trace" aria-labelledby="traceTitle">
           <div class="trace-heading">
-            <h3 id="traceTitle">Gráfica en tiempo real</h3>
-            <label for="traceCoordinate">Coordenada
-              <select id="traceCoordinate"></select>
-            </label>
+            <h3 id="traceTitle">Seguimiento general en tiempo real</h3>
           </div>
-          <canvas id="traceChart" height="108" role="img" aria-label="Coordenadas MediaPipe y EDO a lo largo del tiempo"></canvas>
+          <canvas id="traceChart" height="108" role="img" aria-label="Desplazamiento RMS agregado por cuadro de las manos y el rostro detectados: MediaPipe original frente a MediaPipe filtrado con EDO"></canvas>
           <div class="trace-footer">
             <div class="trace-legend"><span>MediaPipe</span><span>MediaPipe + EDO</span></div>
-            <p class="hint" id="traceStatus">Esperando coordenadas de la cámara.</p>
+            <p class="hint" id="traceStatus">Esperando manos o rostro detectados.</p>
           </div>
+          <p class="hint trace-explanation">Media de desplazamientos RMS 2D de las regiones detectadas (ambas manos y rostro), con igual peso por región. El movimiento voluntario también se refleja: no equivale por sí solo a vibración, exactitud ni eficacia del filtro.</p>
         </section>
         <section class="tracking-metrics" aria-labelledby="trackingMetricsTitle">
           <div class="metrics-heading">
