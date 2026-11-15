@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { activateAppView, resolveAppView } from "../js/navigation.js";
+import { activateAppView, mountEdoContents, resolveAppView } from "../js/navigation.js";
 
 test("view routing uses the translator by default and supports browser history hashes", () => {
   assert.equal(resolveAppView(""), "translator");
@@ -23,6 +23,58 @@ test("view activation exposes one panel and marks its navigation item", () => {
   assert.deepEqual(panels.map(panel => panel.hidden), [true, false]);
   assert.deepEqual(links.map(link => link.attributes["aria-current"] || null),
     [null, "page"]);
+});
+
+test("EDO template elements are validated and mounted before the comparison is initialized", () => {
+  const comparison = { name: "comparison" };
+  const settingsPanels = [{ name: "edo-settings" }, { name: "experimental-evaluation" }];
+  const content = {
+    cloneNode(){ return this; },
+    querySelector(selector){
+      if (selector === ".workspace-right") return comparison;
+      if (selector.startsWith("#")) return selector === "#traceCoordinate" ? null : {};
+      return null;
+    },
+    querySelectorAll(){ return settingsPanels; }
+  };
+  const operations = [];
+  const document = {
+    getElementById(id){
+      return ({
+        edoContents: { content },
+        translatorView: { append(node){ operations.push(["translator", node]); } },
+        settingsView: {
+          insertBefore(node, before){ operations.push(["before-library", node, before]); },
+          append(node){ operations.push(["settings", node]); }
+        },
+        librarySettings: { name: "library" }
+      })[id] || null;
+    }
+  };
+  mountEdoContents(document);
+  assert.deepEqual(operations, [
+    ["translator", comparison],
+    ["before-library", settingsPanels[0], { name: "library" }],
+    ["settings", settingsPanels[1]]
+  ]);
+
+  const missingReferenceDocument = {
+    ...document,
+    getElementById(id){
+      if (id === "edoContents"){
+        return {
+          content: {
+            ...content,
+            querySelector(selector){
+              return selector === "#evaluationReference" ? null : content.querySelector(selector);
+            }
+          }
+        };
+      }
+      return document.getElementById(id);
+    }
+  };
+  assert.throws(() => mountEdoContents(missingReferenceDocument), /#evaluationReference/);
 });
 
 test("the interface has only translator and settings views with comparison controls", async () => {

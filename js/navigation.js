@@ -31,6 +31,13 @@ export function mountEdoContents(document){
   if (!comparison || settingsPanels.length !== 2){
     throw new Error("La plantilla EDO no contiene todos los paneles requeridos.");
   }
+  const requiredComparisonElements = [
+    "#evaluationPanel", "#evaluationReference", "#traceChart", "#traceStatus"
+  ];
+  const missing = requiredComparisonElements.filter(selector => !content.querySelector(selector));
+  if (missing.length){
+    throw new Error(`La plantilla EDO no contiene elementos obligatorios: ${missing.join(", ")}.`);
+  }
   translator.append(comparison);
   settings.insertBefore(settingsPanels[0], librarySettings);
   settings.append(settingsPanels[1]);
