@@ -116,6 +116,7 @@ test("vibration reduction preserves improvements, regressions, and non-calculabl
   assert.ok(Math.abs(calculateVibrationReduction(0.1, 0.07) - 30) < 1e-9);
   assert.ok(Math.abs(calculateVibrationReduction(0.1, 0.12) + 20) < 1e-9);
   assert.equal(calculateVibrationReduction(0, 0.01), null);
+  assert.equal(calculateVibrationReduction(1e-8, 0.01), null);
 });
 
 test("lag estimator detects temporal offset and rejects stationary trajectories", () => {
