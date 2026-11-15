@@ -7,6 +7,7 @@ export function createAuthBootstrap({
   let started = false;
   let appPromise = null;
   let appModule = null;
+  let authGeneration = 0;
 
   function loadApp(){
     if (!appPromise){
@@ -27,11 +28,17 @@ export function createAuthBootstrap({
       started = true;
       initAuthImpl({
         onAuthenticated: async user => {
+          const generation = ++authGeneration;
           const app = await loadApp();
+          if (generation !== authGeneration) return;
           await app.onAuthenticated(user);
         },
         onSignedOut: async () => {
+          authGeneration++;
           await appModule?.onSignedOut?.();
+        },
+        onPasswordRecovery: () => {
+          authGeneration++;
         }
       });
     }

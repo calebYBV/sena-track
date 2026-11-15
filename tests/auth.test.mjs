@@ -205,6 +205,7 @@ test("leaving the translator cancels a camera start that is still importing Medi
     onUnavailable: error => { throw error; }
   });
   const starting = camera.start();
+  await new Promise(resolve => setImmediate(resolve));
   camera.stop();
   resolveCameraModule({
     createCamera: () => ({
@@ -216,6 +217,39 @@ test("leaving the translator cancels a camera start that is still importing Medi
   });
   assert.equal(await starting, false);
   assert.equal(cameraStarted, false);
+});
+
+test("MediaPipe import failures can be retried without creating duplicate cameras", async () => {
+  let attempts = 0;
+  let cameraCreations = 0;
+  let cameraStarts = 0;
+  let reportedError;
+  const camera = createLazyCamera({
+    importModule: async () => {
+      attempts++;
+      if (attempts === 1) throw new Error("temporary CDN failure");
+      return {
+        createCamera: () => {
+          cameraCreations++;
+          return {
+            async start(){ cameraStarts++; return true; },
+            stop(){},
+            resetFilters(){},
+            resetFilterHistory(){}
+          };
+        }
+      };
+    },
+    options: {},
+    onUnavailable: error => { reportedError = error; }
+  });
+  assert.equal(await camera.start(), false);
+  assert.match(reportedError.message, /temporary CDN failure/);
+  assert.equal(await camera.start(), true);
+  assert.equal(await camera.start(), true);
+  assert.equal(attempts, 2);
+  assert.equal(cameraCreations, 1);
+  assert.equal(cameraStarts, 2);
 });
 
 test("a restored session opens the application and initializes its user once", async () => {
@@ -348,6 +382,59 @@ test("bootstrap initializes auth once and defers application imports until sign-
   assert.equal(appImports, 1);
   assert.equal(authenticated, 2);
   assert.equal(signedOut, 1);
+});
+
+test("sign-out invalidates authentication callbacks waiting for the app import", async () => {
+  let authCallbacks;
+  let resolveApp;
+  let authenticated = 0;
+  const bootstrap = createAuthBootstrap({
+    initAuthImpl: callbacks => { authCallbacks = callbacks; },
+    importApp: () => new Promise(resolve => { resolveApp = resolve; })
+  });
+  bootstrap.start();
+  const pendingAuthentication = authCallbacks.onAuthenticated({ id: "stale-user" });
+  await authCallbacks.onSignedOut();
+  resolveApp({ onAuthenticated: async () => { authenticated++; } });
+  await pendingAuthentication;
+  assert.equal(authenticated, 0);
+});
+
+test("password recovery invalidates any pending authenticated app import", async () => {
+  let authCallbacks;
+  let resolveApp;
+  let authenticated = 0;
+  const bootstrap = createAuthBootstrap({
+    initAuthImpl: callbacks => { authCallbacks = callbacks; },
+    importApp: () => new Promise(resolve => { resolveApp = resolve; })
+  });
+  bootstrap.start();
+  const pendingAuthentication = authCallbacks.onAuthenticated({ id: "old-session" });
+  authCallbacks.onPasswordRecovery();
+  resolveApp({ onAuthenticated: async () => { authenticated++; } });
+  await pendingAuthentication;
+  assert.equal(authenticated, 0);
+});
+
+test("rapid account changes authenticate only the newest user after app import", async () => {
+  let authCallbacks;
+  let resolveApp;
+  const authenticatedUsers = [];
+  let appImports = 0;
+  const bootstrap = createAuthBootstrap({
+    initAuthImpl: callbacks => { authCallbacks = callbacks; },
+    importApp: () => {
+      appImports++;
+      return new Promise(resolve => { resolveApp = resolve; });
+    }
+  });
+  bootstrap.start();
+  const firstUser = authCallbacks.onAuthenticated({ id: "first-user" });
+  const secondUser = authCallbacks.onAuthenticated({ id: "current-user" });
+  resolveApp({ onAuthenticated: async user => authenticatedUsers.push(user.id) });
+  await Promise.all([firstUser, secondUser]);
+  assert.equal(appImports, 1);
+  assert.deepEqual(authenticatedUsers, ["current-user"]);
 });
 
 test("the HTML entrypoint starts authentication without statically importing the app", async () => {

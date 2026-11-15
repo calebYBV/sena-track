@@ -78,7 +78,7 @@ const camera = createLazyCamera({
     statusEl.className = "status error";
     statusEl.classList.remove("hidden");
     statusEl.textContent =
-      `No se pudo cargar el módulo de reconocimiento (MediaPipe): ${error.message}. Puedes seguir usando tu cuenta y biblioteca.`;
+      `No se pudo cargar el módulo de reconocimiento (MediaPipe): ${error.message}. Puedes seguir usando tu cuenta y biblioteca; vuelve a entrar al Traductor para reintentar.`;
     $("cameraIndicator").classList.add("has-error");
     $("cameraIndicatorText").textContent = "Reconocimiento no disponible";
   },
