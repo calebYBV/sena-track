@@ -1,6 +1,25 @@
 import { getSupabaseClient, isSupabaseConfigured } from "./supabaseClient.js";
 
-export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
+function withAuthTimeout(promise, timeoutMs, message){
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timeout));
+}
+
+export function initAuth({
+  onAuthenticated,
+  onSignedOut,
+  onPasswordRecovery,
+  getSupabaseClientImpl = getSupabaseClient,
+  isSupabaseConfiguredImpl = isSupabaseConfigured,
+  authRequestTimeoutMs = AUTH_REQUEST_TIMEOUT_MS
+}){
   const loginScreen = document.getElementById("loginScreen");
   const appEl = document.getElementById("app");
   const logoutBtn = document.getElementById("logoutBtn");
@@ -14,9 +33,11 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
   const recoveryForm = document.getElementById("recoveryForm");
   const recoveryPassword = document.getElementById("recoveryPass");
   let supabase;
+  let initialization = Promise.resolve();
   let mode = "signin";
   let currentUserId = null;
   let handlingUser = null;
+  let sessionActive = false;
   let recoveryMode = false;
   let clearPromise = null;
   let authGeneration = 0;
@@ -27,7 +48,8 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     msg.classList.toggle("error", error);
   };
   const setBusy = busy => {
-    for (const control of form.querySelectorAll("input, button")){
+    for (const control of [...form.querySelectorAll("input, button"),
+      ...recoveryForm.querySelectorAll("input, button")]){
       control.disabled = busy;
     }
     signupLink.setAttribute("aria-disabled", String(busy));
@@ -48,6 +70,7 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
   async function acceptUser(user){
     if (!user || recoveryMode || handlingUser === user.id) return;
     if (currentUserId === user.id && appEl.style.display !== "none") return;
+    sessionActive = true;
     const generation = ++authGeneration;
     handlingUser = user.id;
     loginScreen.classList.add("hidden");
@@ -59,7 +82,7 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
       currentUserId = user.id;
     } catch (error){
       if (generation !== authGeneration) return;
-      showMessage(`No se pudo preparar la sesión: ${error.message}`, true);
+      showMessage(`No fue posible preparar la aplicación para la cuenta: ${error.message}`, true);
       appEl.style.display = "none";
       loginScreen.classList.remove("hidden");
       logoutBtn.classList.add("hidden");
@@ -70,6 +93,8 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
 
   function clearSession(){
     if (clearPromise) return clearPromise;
+    if (!sessionActive) return Promise.resolve();
+    sessionActive = false;
     clearPromise = (async () => {
       authGeneration++;
       recoveryMode = false;
@@ -93,7 +118,7 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     button.textContent = `Continuar con ${provider} · No disponible`;
   }
 
-  if (!isSupabaseConfigured()){
+  if (!isSupabaseConfiguredImpl()){
     showMessage("Configura la URL del proyecto y la clave publishable en js/supabaseConfig.js para activar la autenticación.", true);
     setBusy(true);
     for (const provider of ["Google", "Apple"]){
@@ -106,9 +131,18 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
       recoveryForm.hidden = false;
       showMessage("Elige una contraseña nueva para completar la recuperación.");
     } else showMessage("Conectando con Supabase…");
-    void (async () => {
+    initialization = (async () => {
       try {
-        supabase = await getSupabaseClient();
+        supabase = await withAuthTimeout(
+          getSupabaseClientImpl(), authRequestTimeoutMs,
+          "El servicio de autenticación no respondió a tiempo."
+        );
+      } catch (error){
+        showMessage(`No se pudo conectar con el servicio de autenticación: ${error.message}`, true);
+        setBusy(false);
+        return;
+      }
+      try {
         supabase.auth.onAuthStateChange((event, session) => {
           if (event === "PASSWORD_RECOVERY"){
             recoveryMode = true;
@@ -124,13 +158,16 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
           }
           if (session?.user && !recoveryMode) void acceptUser(session.user);
         });
-        const { data, error } = await supabase.auth.getSession();
+        const { data, error } = await withAuthTimeout(
+          supabase.auth.getSession(), authRequestTimeoutMs,
+          "El servicio no respondió a tiempo al recuperar la sesión."
+        );
         if (error) throw error;
         if (data.session?.user) await acceptUser(data.session.user);
         else if (!recoveryMode) showMessage("Ingresa con tu correo y contraseña.");
         setBusy(false);
       } catch (error){
-        showMessage(`No se pudo inicializar Supabase Auth: ${error.message}`, true);
+        showMessage(`No fue posible recuperar la sesión existente: ${error.message}`, true);
         setBusy(false);
       }
     })();
@@ -139,7 +176,7 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
   form.addEventListener("submit", async event => {
     event.preventDefault();
     if (!supabase){
-      showMessage("Supabase Auth no está disponible. Recarga la página e inténtalo de nuevo.", true);
+      showMessage("No se pudo conectar con el servicio de autenticación. Comprueba la conexión y recarga la página para volver a intentarlo.", true);
       return;
     }
     const email = document.getElementById("lfUser").value.trim();
@@ -154,20 +191,24 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
       let result;
       if (mode === "signup"){
         const displayName = document.getElementById("lfName").value.trim();
-        result = await supabase.auth.signUp({
+        result = await withAuthTimeout(supabase.auth.signUp({
           email,
           password: passwordValue,
           options: {
             data: { display_name: displayName },
             emailRedirectTo: `${location.origin}${location.pathname}`
           }
-        });
+        }), authRequestTimeoutMs, "El servicio de autenticación no respondió a tiempo.");
         if (result.error) throw result.error;
         if (!result.data.session){
           showMessage("Cuenta creada. Revisa tu correo y confirma la dirección antes de iniciar sesión.");
         } else showMessage("Cuenta creada. Cargando tu biblioteca…");
       } else {
-        result = await supabase.auth.signInWithPassword({ email, password: passwordValue });
+        result = await withAuthTimeout(
+          supabase.auth.signInWithPassword({ email, password: passwordValue }),
+          authRequestTimeoutMs,
+          "El servicio de autenticación no respondió a tiempo."
+        );
         if (result.error) throw result.error;
         showMessage("Acceso correcto. Cargando tu biblioteca…");
         if (result.data.user) await acceptUser(result.data.user);
@@ -187,7 +228,10 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
 
   forgotLink.addEventListener("click", async event => {
     event.preventDefault();
-    if (!supabase) return;
+    if (!supabase){
+      showMessage("No se pudo conectar con el servicio de autenticación. Recarga la página para volver a intentarlo.", true);
+      return;
+    }
     const email = document.getElementById("lfUser").value.trim();
     if (!email){
       showMessage("Escribe tu correo para enviarte el enlace de recuperación.", true);
@@ -197,13 +241,17 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     forgotLink.setAttribute("aria-disabled", "true");
     showMessage("Enviando enlace de recuperación…");
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${location.origin}${location.pathname}`
-      });
+      const { error } = await withAuthTimeout(
+        supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${location.origin}${location.pathname}`
+        }),
+        authRequestTimeoutMs,
+        "El servicio de autenticación no respondió a tiempo."
+      );
       if (error) throw error;
       showMessage("Si el correo está registrado, recibirás instrucciones para recuperar la contraseña.");
     } catch (error){
-      showMessage(`No se pudo enviar el enlace: ${error.message}`, true);
+      showMessage(`No se pudo enviar el enlace de recuperación: ${error.message}`, true);
     } finally {
       forgotLink.setAttribute("aria-disabled", "false");
     }
@@ -211,6 +259,10 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
 
   recoveryForm.addEventListener("submit", async event => {
     event.preventDefault();
+    if (!supabase){
+      showMessage("No se pudo conectar con el servicio de autenticación. Recarga la página para volver a intentarlo.", true);
+      return;
+    }
     const nextPassword = recoveryPassword.value;
     if (nextPassword.length < 8){
       showMessage("La nueva contraseña debe tener al menos 8 caracteres.", true);
@@ -222,7 +274,11 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     }
     showMessage("Actualizando contraseña…");
     try {
-      const { data, error } = await supabase.auth.updateUser({ password: nextPassword });
+      const { data, error } = await withAuthTimeout(
+        supabase.auth.updateUser({ password: nextPassword }),
+        authRequestTimeoutMs,
+        "El servicio de autenticación no respondió a tiempo."
+      );
       if (error) throw error;
       recoveryMode = false;
       recoveryForm.hidden = true;
@@ -246,7 +302,11 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
     if (!supabase) return;
     logoutBtn.disabled = true;
     try {
-      const { error } = await supabase.auth.signOut({ scope: "local" });
+      const { error } = await withAuthTimeout(
+        supabase.auth.signOut({ scope: "local" }),
+        authRequestTimeoutMs,
+        "El servicio de autenticación no respondió a tiempo."
+      );
       if (error) throw error;
       await clearSession();
     } catch (error){
@@ -255,4 +315,5 @@ export function initAuth({ onAuthenticated, onSignedOut, onPasswordRecovery }){
       logoutBtn.disabled = false;
     }
   });
+  return initialization;
 }
