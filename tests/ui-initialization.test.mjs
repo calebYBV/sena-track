@@ -150,8 +150,8 @@ test("the stability panel contains only displacement and vibration cards", async
   assert.ok(panel);
   assert.match(panel, /Estabilidad del seguimiento/);
   assert.match(panel, /Desplazamiento general/);
-  assert.match(panel, /RMS 2D normalizado/);
-  assert.match(panel, /Fluctuaciones durante segmentos estables/);
+  assert.match(panel, /RMS 2D · % de escala\/s/);
+  assert.match(panel, /Ventana estable · % de escala/);
   assert.equal([...panel.matchAll(/class="tracking-metric /g)].length, 2);
   assert.doesNotMatch(panel, /trackingLag|retardo temporal|desfase/);
   for (const id of ["displacementRawValue", "displacementFilteredValue",
@@ -164,6 +164,11 @@ test("the stability panel contains only displacement and vibration cards", async
 test("tracking UI renders both branches, relative changes, and quiet-window progress", async () => {
   const html = await read("index.html");
   const { elements, ui } = installUI(html);
+  assert.equal((html.match(/<article class="tracking-metric /g) || []).length, 2);
+  assert.match(html, /trace-legend"><span>MediaPipe<\/span><span>MediaPipe \+ EDO<\/span>/);
+  assert.match(html, /trace-explanation">Movimiento general de las coordenadas detectadas\./);
+  const styles = await read("css/styles.css");
+  assert.match(styles, /@media\(max-width:600px\)[\s\S]*?\.tracking-metric-grid\{grid-template-columns:1fr\}/);
   ui.updateTrackingMetrics({
     displacementRaw: 2,
     displacementFiltered: 2.4,
@@ -173,6 +178,7 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
     vibrationFiltered: 0.08,
     vibrationReduction: 33.3,
     vibrationAssessment: "EDO reduce la vibración",
+    vibrationRegionCount: 1,
     vibrationProgress: 60,
     quietReason: "Segmento estable: 60%.",
     status: "Analizando 1 región.",
@@ -180,11 +186,12 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
   });
   assert.equal(elements.get("displacementRawValue").textContent, "2.00");
   assert.equal(elements.get("displacementFilteredValue").textContent, "2.40");
-  assert.match(elements.get("displacementComparison").textContent, /-20\.0 %/);
-  assert.match(elements.get("displacementAssessment").textContent, /Mayor desplazamiento/);
+  assert.match(elements.get("displacementComparison").textContent, /20\.0 % más desplazamiento/);
+  assert.equal(elements.get("displacementAssessment").textContent, "");
   assert.equal(elements.get("vibrationRawValue").textContent, "0.120");
   assert.equal(elements.get("vibrationFilteredValue").textContent, "0.080");
-  assert.match(elements.get("vibrationReduction").textContent, /\+33\.3 %/);
+  assert.match(elements.get("vibrationReduction").textContent, /33\.3 % menos vibración/);
+  assert.equal(elements.get("stabilityAssessment").textContent, "1 región incluida");
   assert.equal(elements.get("vibrationProgress").value, 60);
   assert.equal(elements.get("vibrationProgress").getAttribute("aria-valuenow"), "60");
 
@@ -197,13 +204,14 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
     vibrationFiltered: 0,
     vibrationReduction: null,
     vibrationAssessment: "Sin diferencia medible",
+    vibrationRegionCount: 1,
     vibrationProgress: 100,
     quietReason: "Ventana quieta medida.",
     status: "Analizando 1 región.",
     note: "Nota de análisis"
   });
-  assert.match(elements.get("displacementComparison").textContent, /porcentaje no calculable/i);
-  assert.match(elements.get("vibrationReduction").textContent, /base demasiado pequeñ/i);
+  assert.match(elements.get("displacementComparison").textContent, /valor base demasiado pequeñ/i);
+  assert.equal(elements.get("vibrationReduction").textContent, "Sin diferencia medible");
 
   const idleMessage = "Inicia el reconocimiento para visualizar el análisis EDO.";
   ui.resetCoordinateTrace(idleMessage);
@@ -216,6 +224,7 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
     vibrationFiltered: null,
     vibrationReduction: null,
     vibrationAssessment: null,
+    vibrationRegionCount: 0,
     vibrationProgress: 0,
     quietReason: idleMessage,
     status: idleMessage,
@@ -224,6 +233,9 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
   assert.equal(elements.get("displacementRawValue").textContent, "—");
   assert.equal(elements.get("vibrationRawValue").textContent, "—");
   assert.equal(elements.get("vibrationProgress").value, 0);
+  assert.equal(elements.get("stabilityAssessment").textContent, "");
+  assert.equal(elements.get("vibrationProgressText").textContent, "");
+  assert.equal(elements.get("vibrationReduction").textContent, idleMessage);
   assert.equal(elements.get("traceStatus").textContent, idleMessage);
   assert.equal(elements.get("trackingCalculationStatus").textContent, idleMessage);
 });

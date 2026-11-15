@@ -129,7 +129,7 @@ test("one quiet hand with small tracking noise yields paired vibration estimates
   assert.ok(result.displacementRaw > 0);
   assert.ok(result.vibrationRaw > result.vibrationFiltered);
   assert.equal(result.regionCount, 1);
-  assert.match(result.quietReason, /ventana quieta/i);
+  assert.match(result.quietReason, /medición disponible/i);
 });
 
 test("two quiet hands are measured together with equal regional weighting", () => {
@@ -180,6 +180,21 @@ test("face-only tracking uses face width as its normalization scale", () => {
   assert.match(result.note, /ancho facial/);
 });
 
+test("quiet detection is computed per region so a stable hand is not blocked by face motion", () => {
+  const analyzer = createTrackingDiagnostics();
+  let result;
+  for (let i = 0; i < 110; i++){
+    const rawFace = face(0.5 + 0.08 * Math.sin(i * 0.5), i, 0.003);
+    const filteredFace = face(0.5 + 0.04 * Math.sin(i * 0.5), i, 0.0015);
+    const raw = frame({ left: hand(0.3, i, 0.00003), facePoints: rawFace });
+    const filtered = frame({ left: hand(0.3, i, 0.000015), facePoints: filteredFace });
+    result = push(analyzer, raw, filtered, i * dt);
+  }
+  assert.ok(result.vibrationRaw > 0);
+  assert.equal(result.vibrationRegionCount, 1);
+  assert.match(result.quietReason, /medición disponible/i);
+});
+
 test("robust quiet-window acquisition tolerates normal frame-to-frame landmark jitter", () => {
   const { result } = collectQuiet({
     regions: ["left", "right", "face"],
@@ -187,18 +202,37 @@ test("robust quiet-window acquisition tolerates normal frame-to-frame landmark j
     filteredNoise: 0.0001
   });
   assert.ok(result.vibrationRaw > result.vibrationFiltered);
-  assert.match(result.quietReason, /ventana quieta/i);
+  assert.match(result.quietReason, /medición disponible/i);
 });
 
-test("quiet acquisition completes after five seconds at 15, 24, 30, and 60 FPS", () => {
-  for (const fps of [15, 24, 30, 60]){
+test("quiet acquisition completes after five seconds from 8 through 60 FPS", () => {
+  for (const fps of [8, 10, 12, 15, 24, 30, 60]){
     const { result, maxProgress, progressValues } =
       collectQuietAtIntervals(() => 1000 / fps);
     assert.ok(result.vibrationRaw !== null, `${fps}fps did not calculate vibration`);
     assert.equal(result.vibrationProgress, 100);
+    assert.equal(result.vibrationRegionCount, 1);
+    assert.equal(result.vibrationState, "medicion-disponible");
     assert.equal(maxProgress, 100);
     assert.ok(progressValues.some(progress => progress > 0 && progress < 100));
-    assert.match(result.quietReason, /ventana quieta/i);
+    assert.match(result.quietReason, /medición disponible/i);
+  }
+});
+
+test("acquisition reports state transitions that match the tracking and measurement phases", () => {
+  const analyzer = createTrackingDiagnostics();
+  const missing = frame({});
+  assert.equal(push(analyzer, missing, missing, 0).vibrationState, "sin-seguimiento");
+
+  const seen = new Set();
+  for (let i = 0; i <= 150; i++){
+    const raw = frame({ left: hand(0.3, i, 0.00004) });
+    const filtered = frame({ left: hand(0.3, i, 0.00002) });
+    seen.add(push(analyzer, raw, filtered, i * dt).vibrationState);
+  }
+  for (const phase of ["adquiriendo-muestras", "analizando-quietud",
+    "midiendo-vibracion", "medicion-disponible"]){
+    assert.ok(seen.has(phase), `missing acquisition phase ${phase}`);
   }
 });
 
@@ -210,6 +244,20 @@ test("quiet acquisition tolerates irregular timestamps without requiring exact w
   assert.equal(result.vibrationProgress, 100);
   assert.equal(maxProgress, 100);
   assert.ok(progressValues.some(progress => progress > 0 && progress < 100));
+});
+
+test("quiet acquisition tolerates irregular timestamps at low camera frame rates", () => {
+  for (const fps of [8, 10, 12, 15]){
+    const { result, maxProgress, progressValues } = collectQuietAtIntervals(index =>
+      (1000 / fps) * (1 + 0.12 * Math.sin(index * 1.7)));
+    assert.ok(result.vibrationRaw !== null,
+      `${fps}fps irregular timestamps did not measure: ${JSON.stringify(result)}`);
+    assert.equal(result.vibrationRegionCount, 1);
+    assert.equal(result.vibrationState, "medicion-disponible");
+    assert.equal(result.vibrationProgress, 100);
+    assert.equal(maxProgress, 100);
+    assert.ok(progressValues.some(progress => progress > 0 && progress < 100));
+  }
 });
 
 test("voluntary motion at camera frame rates does not qualify as a quiet segment", () => {
@@ -305,23 +353,63 @@ test("a tracking gap longer than the pairing limit discards the old window", () 
   const result = push(analyzer, resumed, resumed, 80 * dt + 300);
   assert.equal(result.displacementRaw, null);
   assert.match(result.status, /pérdida temporal/i);
+  assert.equal(result.vibrationState, "seguimiento-interrumpido");
 });
 
-test("appearance and disappearance of a region creates a new paired segment", () => {
+test("a new or missing region does not interrupt an existing region's acquisition", () => {
   const analyzer = createTrackingDiagnostics();
+  let result;
   for (let i = 0; i < 20; i++){
     const both = frame({ left: hand(0.3, i), right: hand(0.7, i) });
-    push(analyzer, both, both, i * dt);
+    result = push(analyzer, both, both, i * dt);
   }
-  const one = frame({ left: hand(0.3, 20) });
-  const changed = push(analyzer, one, one, 20 * dt);
-  assert.equal(changed.displacementRaw, null);
-  assert.match(changed.status, /cambió la región/i);
-  const resumed = push(analyzer, one, one, 21 * dt);
-  assert.equal(resumed.displacementRaw, null);
-  const reappeared = frame({ left: hand(0.3, 22), right: hand(0.7, 22) });
-  const appeared = push(analyzer, reappeared, reappeared, 22 * dt);
-  assert.match(appeared.status, /cambió la región/i);
+  for (let i = 20; i < 110; i++){
+    const one = frame({ left: hand(0.3, i, 0.00004) });
+    result = push(analyzer, one, one, i * dt);
+  }
+  for (let i = 110; i < 145; i++){
+    const both = frame({
+      left: hand(0.3, i, 0.00004),
+      right: hand(0.7, i, 0.00004)
+    });
+    result = push(analyzer, both, both, i * dt);
+  }
+  assert.ok(result.vibrationRaw > 0);
+  assert.equal(result.vibrationRegionCount, 1);
+});
+
+test("regional aggregation includes only windows with comparable temporal coverage", () => {
+  const analyzer = createTrackingDiagnostics();
+  const fps = 15;
+  const period = 1000 / fps;
+  let result;
+  for (let i = 0; i <= 75; i++){
+    const raw = frame({
+      left: hand(0.3, i, 0.00004),
+      ...(i >= 52 ? { right: hand(0.7, i, 0.00004) } : {})
+    });
+    const filtered = frame({
+      left: hand(0.3, i, 0.00002),
+      ...(i >= 52 ? { right: hand(0.7, i, 0.00002) } : {})
+    });
+    result = push(analyzer, raw, filtered, i * period);
+  }
+  assert.ok(result.vibrationRaw > 0);
+  assert.equal(result.vibrationRegionCount, 1);
+
+  for (let i = 76; i <= 100; i++){
+    const raw = frame({
+      left: hand(0.3, i, 0.00004),
+      right: hand(0.7, i, 0.00004)
+    });
+    const filtered = frame({
+      left: hand(0.3, i, 0.00002),
+      right: hand(0.7, i, 0.00002)
+    });
+    result = push(analyzer, raw, filtered, i * period);
+  }
+  assert.ok(result.vibrationRaw > 0);
+  assert.equal(result.vibrationRegionCount, 2);
 });
 
 test("left-to-right identity changes do not connect unrelated hand trajectories", () => {
@@ -332,8 +420,8 @@ test("left-to-right identity changes do not connect unrelated hand trajectories"
   }
   const right = frame({ right: hand(0.7, 10) });
   const changed = push(analyzer, right, right, 10 * dt);
-  assert.equal(changed.displacementRaw, null);
-  assert.match(changed.status, /cambió la región/i);
+  assert.equal(changed.vibrationRaw, null);
+  assert.equal(changed.vibrationRegionCount, 0);
 });
 
 test("large same-region jumps reset continuity instead of linking swapped identities", () => {
@@ -344,8 +432,8 @@ test("large same-region jumps reset continuity instead of linking swapped identi
   }
   const swapped = frame({ left: hand(0.7, 10), right: hand(0.3, 10) });
   const result = push(analyzer, swapped, swapped, 10 * dt);
-  assert.equal(result.displacementRaw, null);
-  assert.match(result.status, /salto de identidad\/lateralidad/i);
+  assert.equal(result.vibrationRaw, null);
+  assert.equal(result.vibrationRegionCount, 0);
 });
 
 test("the diagnostic reports lower observed vibration when the filtered branch is smoother", () => {
