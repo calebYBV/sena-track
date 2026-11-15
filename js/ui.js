@@ -384,10 +384,6 @@ function setEvaluationEnabled(enabled){
     $("filteredDistance").textContent = "—";
     $("distanceReduction").textContent = "No disponible";
     $("comparisonNote").textContent = "Las capturas de entrenamiento no cuentan como pruebas.";
-    updateTrackingMetrics({
-      rawVibration: null, filteredVibration: null, vibrationReduction: null, lagMs: null,
-      note: "Métricas disponibles durante el reconocimiento, no durante la captura de ejemplos."
-    }, "En pausa");
   } else {
     lastComparison = null;
     renderComparison();
@@ -486,25 +482,32 @@ function updateComparison(comparison){
   lastComparison = comparison;
   renderComparison();
 }
-function updateTrackingMetrics(metrics, calculationStatus){
+function updateTrackingMetrics(metrics){
+  $("displacementReadout").textContent =
+    metrics.displacementRaw == null || metrics.displacementFiltered == null
+      ? "Esperando cuadros emparejados"
+      : `MP ${metrics.displacementRaw.toFixed(2)} / +EDO ` +
+        `${metrics.displacementFiltered.toFixed(2)} % escala/s`;
+  $("displacementStatus").textContent = metrics.displacementRaw == null
+    ? metrics.status
+    : `RMS 2D normalizado · ${metrics.regionCount} ` +
+      `${metrics.regionCount === 1 ? "región" : "regiones"} · ` +
+      `${metrics.displacementSamples} cuadros recientes`;
   $("vibrationReduction").textContent = metrics.vibrationReduction == null
-    ? "No calculable" : `${metrics.vibrationReduction.toFixed(1)}%`;
+    ? "Variación: no calculable"
+    : `Variación: ${metrics.vibrationReduction > 0 ? "+" : ""}` +
+      `${metrics.vibrationReduction.toFixed(1)}%`;
   $("vibrationDistances").textContent = metrics.rawVibration == null || metrics.filteredVibration == null
-    ? "Esperando un segmento quieto"
-    : `${metrics.rawVibration.toFixed(5)} / ${metrics.filteredVibration.toFixed(5)} palma/cuadro`;
+    ? metrics.quietReason
+    : `MP ${metrics.rawVibration.toFixed(3)} / +EDO ` +
+      `${metrics.filteredVibration.toFixed(3)} % escala`;
   $("trackingLag").textContent = metrics.lagMs == null
-    ? "No calculable" : `${metrics.lagMs.toFixed(0)} ms · estimación`;
-  const assessment = $("stabilityAssessment");
-  assessment.textContent = metrics.rawVibration == null || metrics.filteredVibration == null
-    ? "Esperando segmento quieto"
-    : metrics.filteredVibration < metrics.rawVibration
-      ? "EDO reduce la vibración"
-      : metrics.filteredVibration > metrics.rawVibration
-        ? "EDO aumenta la vibración"
-        : "Sin cambio medible";
+    ? "No estimable" : `${metrics.lagMs.toFixed(0)} ms · estimación`;
+  $("trackingLagNote").textContent = metrics.lagReason;
+  $("stabilityAssessment").textContent = metrics.vibrationAssessment ||
+    "Sin medición de vibración válida";
   $("trackingMetricNote").textContent = metrics.note;
-  $("trackingCalculationStatus").textContent = calculationStatus ||
-    (metrics.rawVibration != null || metrics.lagMs != null ? "Datos actualizados" : "Esperando segmento");
+  $("trackingCalculationStatus").textContent = metrics.status;
 }
 
 function resetCoordinateTrace(){

@@ -1,6 +1,7 @@
 import { HandLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
-import { createEdoFilter, calculateVibrationReduction, estimateTrackingLag } from "./filters.js";
+import { createEdoFilter } from "./filters.js";
 import { extractFaceFeatures } from "./holistic.js";
+import { createTrackingDiagnostics } from "./trackingDiagnostics.js";
 import {
   isCurrentRecognitionResult,
   selectActivePrediction
@@ -22,79 +23,18 @@ let lastFrameError = null;
 let activeHand = null, lastTime = -1;
 const edo = createEdoFilter();
 let lastComparisonAt = -Infinity;
-let lastTrackingMetricUpdateAt = -Infinity;
-let trackingDiagnosticsActive = false;
-let lastTrackingMetricNote = null;
-let previousMeasurement = null;
-let quietMeasurements = [];
-let movingMeasurements = [];
+const trackingDiagnostics = createTrackingDiagnostics();
 
-function stepDisplacement(previous, current, aspect, palmSize){
-  let sum = 0;
-  for (let i = 0; i < current.length; i++){
-    const dx = (current[i].x - previous[i].x) * aspect;
-    const dy = current[i].y - previous[i].y;
-    sum += dx * dx + dy * dy;
-  }
-  return Math.sqrt(sum / current.length) / palmSize;
+function resetTrackingDiagnostics(note = "Seguimiento interrumpido; sincronizando nuevas observaciones."){
+  updateTrackingMetrics(trackingDiagnostics.reset(note));
 }
 
-function updateTrackingDiagnostics(raw, filtered, timestamp){
-  trackingDiagnosticsActive = true;
-  lastTrackingMetricNote = null;
-  const aspect = video.videoWidth / video.videoHeight;
-  const palmSize = Math.max(0.01, Math.hypot(
-    (raw[9].x - raw[0].x) * aspect, raw[9].y - raw[0].y
-  ));
-  if (previousMeasurement){
-    const dt = (timestamp - previousMeasurement.time) / 1000;
-    if (dt > 0){
-      const rawStep = stepDisplacement(previousMeasurement.raw, raw, aspect, palmSize);
-      const filteredStep = stepDisplacement(previousMeasurement.filtered, filtered, aspect, palmSize);
-      if (rawStep / dt < 0.18){
-        quietMeasurements.push({ raw: rawStep, filtered: filteredStep });
-        if (quietMeasurements.length > 120) quietMeasurements.shift();
-      } else quietMeasurements = [];
-
-      const rawWrist = raw[0], filteredWrist = filtered[0];
-      if (rawStep / dt >= 0.18){
-        movingMeasurements.push({ raw: rawWrist, filtered: filteredWrist, time: timestamp, aspect });
-        if (movingMeasurements.length > 90) movingMeasurements.shift();
-      } else movingMeasurements = [];
-    }
-  }
-  previousMeasurement = {
-    raw: raw.map(point => ({ x: point.x, y: point.y })),
-    filtered: filtered.map(point => ({ x: point.x, y: point.y })),
-    time: timestamp
-  };
-  if (timestamp - lastTrackingMetricUpdateAt < 200) return;
-  lastTrackingMetricUpdateAt = timestamp;
-  const hasQuietRun = quietMeasurements.length >= 15;
-  const rawVibration = hasQuietRun
-    ? Math.sqrt(quietMeasurements.reduce((sum, item) => sum + item.raw ** 2, 0) / quietMeasurements.length) : null;
-  const filteredVibration = hasQuietRun
-    ? Math.sqrt(quietMeasurements.reduce((sum, item) => sum + item.filtered ** 2, 0) / quietMeasurements.length) : null;
-  const vibrationReduction = calculateVibrationReduction(rawVibration, filteredVibration);
-  const lagMs = estimateTrackingLag(movingMeasurements);
-  updateTrackingMetrics({
-    rawVibration, filteredVibration, vibrationReduction, lagMs,
-    note: "Mano seguida: vibración = RMS del desplazamiento de sus 21 landmarks entre cuadros consecutivos, normalizado por el tamaño de palma raw (longitudes de palma/cuadro); se compara tras ≥15 cuadros con velocidad raw <0,18 longitudes de palma/s. Retardo = desfase de máxima correlación (≥0,6) de velocidades x/y de muñeca, hasta 10 cuadros; ms estimados, no tiempo de cómputo ni de confirmación."
-  });
-}
-
-function resetTrackingDiagnostics(note = "Métricas reiniciadas al perder la mano o iniciar una captura."){
-  previousMeasurement = null;
-  quietMeasurements = [];
-  movingMeasurements = [];
-  lastTrackingMetricUpdateAt = -Infinity;
-  if (!trackingDiagnosticsActive && lastTrackingMetricNote === note) return;
-  trackingDiagnosticsActive = false;
-  lastTrackingMetricNote = note;
-  updateTrackingMetrics({
-    rawVibration: null, filteredVibration: null, vibrationReduction: null, lagMs: null,
-    note
-  });
+function updateTrackingMeasurements(rawFrame, filteredFrame, timestamp){
+  const aspect = video.videoHeight > 0 ? video.videoWidth / video.videoHeight : 1;
+  const metrics = trackingDiagnostics.update(
+    rawFrame, filteredFrame, timestamp, aspect, state.filterConfig
+  );
+  if (metrics.shouldUpdate) updateTrackingMetrics(metrics);
 }
 
 function releaseMedia(){
@@ -200,7 +140,6 @@ function chooseHand(results){
     const next = identities[index];
     if (activeHand !== null && activeHand !== next){
       state.cand = null; state.candCount = 0; state.committed = null; state.noHand = 0;
-      resetTrackingDiagnostics("Métricas reiniciadas al cambiar la mano seguida.");
       const recording = !!(state.motion || state.capState);
       resetTracking();
       if (recording) setNote(state.motion?.purpose === "recognize"
@@ -271,6 +210,7 @@ function processFrame(){
       faceFeatures: face?.filteredFeatures
     };
     ui.updateCoordinateTrace(rawFrame, filteredFrame, timestamp);
+    updateTrackingMeasurements(rawFrame, filteredFrame, timestamp);
     const presence = {
       Left: !!handTracks.Left,
       Right: !!handTracks.Right,
@@ -313,12 +253,6 @@ function processFrame(){
         }
       }
       if (state.motion){
-        if (state.motion.purpose === "recognize"){
-          if (selected) updateTrackingDiagnostics(
-            selected.rawLandmarks, selected.filteredLandmarks, timestamp);
-          else resetTrackingDiagnostics(
-            "No disponible: vibración y retraso requieren una mano detectada.");
-        }
         tickMotion({
           rawFrame, filteredFrame, presence,
           rawLandmarks: selected?.rawLandmarks, filteredLandmarks: selected?.filteredLandmarks,
@@ -329,11 +263,6 @@ function processFrame(){
           faceAvailable: presence.face
         });
       } else if (!isCapturing && state.recognitionEnabled){
-        if (selected){
-          updateTrackingDiagnostics(selected.rawLandmarks, selected.filteredLandmarks, timestamp);
-        } else {
-          resetTrackingDiagnostics("No disponible: vibración y retraso requieren una mano detectada.");
-        }
         const predictions = compareStatic({
           ...selected, rawFrame, filteredFrame
         }, timestamp);

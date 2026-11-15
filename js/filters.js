@@ -43,57 +43,120 @@ const validFilterConfig = config =>
   finite(config.omegaN) && config.omegaN >= 2 && config.omegaN <= 30;
 
 export function calculateVibrationReduction(raw, filtered){
-  if (!finite(raw) || !finite(filtered) || raw <= 1e-9) return null;
+  if (!finite(raw) || !finite(filtered) || raw <= 1e-6) return null;
   return 100 * (raw - filtered) / raw;
 }
 
-export function estimateTrackingLag(samples){
-  if (samples.length < 18) return null;
-  const raw = [], filtered = [], times = [];
-  for (let i = 1; i < samples.length; i++){
-    const dt = (samples[i].time - samples[i - 1].time) / 1000;
-    if (dt <= 0) continue;
-    raw.push([
-      (samples[i].raw.x - samples[i - 1].raw.x) * samples[i].aspect / dt,
-      (samples[i].raw.y - samples[i - 1].raw.y) / dt
-    ]);
-    filtered.push([
-      (samples[i].filtered.x - samples[i - 1].filtered.x) * samples[i].aspect / dt,
-      (samples[i].filtered.y - samples[i - 1].filtered.y) / dt
-    ]);
-    times.push(samples[i].time);
+export function estimateTrackingLagDetails(samples){
+  const unavailable = reason => ({ lagMs: null, correlation: null, reason });
+  if (!Array.isArray(samples) || samples.length < 24){
+    return unavailable("Se requieren al menos 24 muestras emparejadas por región.");
   }
-  const maxLag = Math.min(10, Math.floor(raw.length / 4));
+  for (let i = 0; i < samples.length; i++){
+    const sample = samples[i];
+    if (!finite(sample?.time) || !finite(sample?.aspect) || sample.aspect <= 0 ||
+        !finite(sample?.raw?.x) || !finite(sample?.raw?.y) ||
+        !finite(sample?.filtered?.x) || !finite(sample?.filtered?.y) ||
+        (i > 0 && sample.time <= samples[i - 1].time)){
+      return unavailable("La trayectoria contiene coordenadas o marcas de tiempo no válidas.");
+    }
+  }
+  const intervals = samples.slice(1).map((sample, index) =>
+    sample.time - samples[index].time);
+  const sortedIntervals = [...intervals].sort((a, b) => a - b);
+  const middle = Math.floor(sortedIntervals.length / 2);
+  const periodMs = sortedIntervals.length % 2
+    ? sortedIntervals[middle]
+    : (sortedIntervals[middle - 1] + sortedIntervals[middle]) / 2;
+  if (periodMs > 200){
+    return unavailable("La frecuencia de cuadros es demasiado baja para resolver un desfase temporal.");
+  }
+  if (!(periodMs > 0) || intervals.some(interval =>
+    interval > Math.max(250, periodMs * 3))){
+    return unavailable("Hay pausas de seguimiento que impiden interpolar una trayectoria continua.");
+  }
+  if (samples.at(-1).time - samples[0].time < 500){
+    return unavailable("La trayectoria todavía no cubre suficiente tiempo para estimar el retardo.");
+  }
+
+  const positions = samples.map(sample => ({
+    time: sample.time,
+    raw: [sample.raw.x * sample.aspect, sample.raw.y],
+    filtered: [sample.filtered.x * sample.aspect, sample.filtered.y]
+  }));
+  const uniform = [];
+  let cursor = 0;
+  const period = periodMs;
+  for (let time = positions[0].time; time <= positions.at(-1).time; time += period){
+    while (cursor < positions.length - 2 && positions[cursor + 1].time < time) cursor++;
+    const start = positions[cursor], end = positions[cursor + 1];
+    const fraction = (time - start.time) / (end.time - start.time);
+    uniform.push({
+      raw: start.raw.map((value, axis) => value + (end.raw[axis] - value) * fraction),
+      filtered: start.filtered.map((value, axis) =>
+        value + (end.filtered[axis] - value) * fraction)
+    });
+  }
+  const rawVelocity = [], filteredVelocity = [];
+  for (let i = 1; i < uniform.length; i++){
+    rawVelocity.push(uniform[i].raw.map((value, axis) =>
+      (value - uniform[i - 1].raw[axis]) * 1000 / period));
+    filteredVelocity.push(uniform[i].filtered.map((value, axis) =>
+      (value - uniform[i - 1].filtered[axis]) * 1000 / period));
+  }
+  const maxLag = Math.min(
+    Math.floor(400 / period),
+    Math.floor(rawVelocity.length / 4)
+  );
+  const minimumPairs = Math.max(16, Math.ceil(rawVelocity.length * 0.6));
   let best = null;
   for (let lag = 0; lag <= maxLag; lag++){
-    const pairs = [];
-    for (let i = lag; i < raw.length; i++) pairs.push([raw[i - lag], filtered[i]]);
+    const count = rawVelocity.length - lag;
+    if (count < minimumPairs) continue;
     const rawMeans = [0, 0], filteredMeans = [0, 0];
-    for (const [a, b] of pairs){
-      rawMeans[0] += a[0]; rawMeans[1] += a[1];
-      filteredMeans[0] += b[0]; filteredMeans[1] += b[1];
+    for (let i = lag; i < rawVelocity.length; i++){
+      for (let axis = 0; axis < 2; axis++){
+        rawMeans[axis] += rawVelocity[i - lag][axis];
+        filteredMeans[axis] += filteredVelocity[i][axis];
+      }
     }
     for (let axis = 0; axis < 2; axis++){
-      rawMeans[axis] /= pairs.length;
-      filteredMeans[axis] /= pairs.length;
+      rawMeans[axis] /= count;
+      filteredMeans[axis] /= count;
     }
     let covariance = 0, rawEnergy = 0, filteredEnergy = 0;
-    for (const [a, b] of pairs){
+    for (let i = lag; i < rawVelocity.length; i++){
       for (let axis = 0; axis < 2; axis++){
-        const x = a[axis] - rawMeans[axis], y = b[axis] - filteredMeans[axis];
+        const x = rawVelocity[i - lag][axis] - rawMeans[axis];
+        const y = filteredVelocity[i][axis] - filteredMeans[axis];
         covariance += x * y;
         rawEnergy += x * x;
         filteredEnergy += y * y;
       }
     }
-    if (!rawEnergy || !filteredEnergy) continue;
+    if (rawEnergy / (count * 2) < 1e-8 ||
+        filteredEnergy / (count * 2) < 1e-8) continue;
     const correlation = covariance / Math.sqrt(rawEnergy * filteredEnergy);
     if (!best || correlation > best.correlation) best = { lag, correlation };
   }
-  if (!best || best.correlation < 0.6) return null;
-  const delays = [];
-  for (let i = best.lag; i < times.length; i++) delays.push(times[i] - times[i - best.lag]);
-  return delays.reduce((sum, value) => sum + value, 0) / delays.length;
+  if (!best){
+    return unavailable("El movimiento es constante o demasiado pequeño; faltan cambios de velocidad/dirección.");
+  }
+  if (best.lag === maxLag && maxLag > 0){
+    return unavailable("El desfase parece superar el intervalo de búsqueda de 400 ms.");
+  }
+  if (best.correlation < 0.65){
+    return unavailable("Las trayectorias raw y EDO no tienen correlación suficiente (se requiere ≥0,65).");
+  }
+  return {
+    lagMs: best.lag * period,
+    correlation: best.correlation,
+    reason: null
+  };
+}
+
+export function estimateTrackingLag(samples){
+  return estimateTrackingLagDetails(samples).lagMs;
 }
 
 export function createEdoFilter(){
