@@ -264,6 +264,41 @@ test("a restored session opens the application and initializes its user once", a
   assert.equal(elements.get("app").style.display, "");
 });
 
+test("a successful login loads the authenticated user's library before opening the app", async () => {
+  const elements = installDom();
+  const supabase = createSupabase();
+  const loadedUsers = [];
+  const handlers = createAppAuthHandlers({
+    state: { userId: null },
+    camera: { async start(){}, stop(){} },
+    evaluationCapture: { clear(){} },
+    storage: {
+      clearUser(){},
+      async loadUserLibrary(userId){
+        loadedUsers.push(userId);
+        return { cancelled: false };
+      }
+    },
+    ui: {
+      clearForUser(){},
+      refreshFilterControls(){},
+      refreshReferences(){},
+      setSyncStatus(){}
+    },
+    training: { refreshButtons(){} },
+    navigation: { current: () => "settings" }
+  });
+  await startAuth(elements, supabase, {
+    onAuthenticated: user => handlers.onAuthenticated(user)
+  });
+  elements.get("lfUser").value = "person@example.com";
+  elements.get("lfPass").value = "not-a-real-password";
+  await elements.get("loginForm").trigger("submit");
+  assert.deepEqual(loadedUsers, ["user-1"]);
+  assert.equal(elements.get("app").style.display, "");
+  assert.equal(elements.get("loginScreen").classList.contains("hidden"), true);
+});
+
 test("submitting credentials calls signInWithPassword and rejects invalid credentials visibly", async () => {
   const elements = installDom();
   const supabase = createSupabase({
@@ -439,7 +474,7 @@ test("rapid account changes authenticate only the newest user after app import",
 
 test("the HTML entrypoint starts authentication without statically importing the app", async () => {
   const html = await readFile(new URL("../index.html", import.meta.url), "utf8");
-  assert.match(html, /<script type="module" src="\.\/js\/authBootstrap\.js"><\/script>/);
+  assert.match(html, /<script type="module" src="\.\/js\/authBootstrap\.js\?v=[^"]+"><\/script>/);
   assert.doesNotMatch(html, /<script type="module" src="\.\/js\/app\.js"><\/script>/);
   const app = await readFile(new URL("../js/app.js", import.meta.url), "utf8");
   assert.doesNotMatch(app, /import\s*\{\s*createCamera\s*\}\s*from\s*["']\.\/camera\.js["']/);

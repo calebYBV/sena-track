@@ -14,7 +14,13 @@ import { globalTraceDisplacement } from "./globalTrace.js";
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
 let lastComparison = null;
-const traceCanvas = $("traceChart");
+function requireElement(id){
+  const element = $(id);
+  if (!element) throw new Error(`Falta el elemento obligatorio #${id} en la interfaz.`);
+  return element;
+}
+const traceCanvas = requireElement("traceChart");
+const evaluationReference = requireElement("evaluationReference");
 const traceContext = traceCanvas.getContext("2d");
 const traceSamples = [];
 let lastTraceUpdate = -Infinity;
@@ -346,7 +352,7 @@ for (const [id, key] of [
 }
 refreshAmbiguityControls();
 function refreshReferences(){
-  const select = $("evaluationReference");
+  const select = evaluationReference;
   const selected = select.value;
   const labels = new Set([...state.samples, ...state.motions]
     .filter(example => example.syncStatus !== "pending")
@@ -355,14 +361,14 @@ function refreshReferences(){
   for (const label of labels) select.add(new Option(label, label));
   if (labels.has(selected)) select.value = selected;
 }
-$("evaluationReference").addEventListener("change", renderComparison);
+evaluationReference.addEventListener("change", renderComparison);
 refreshFilterControls();
 
 function setEvaluationEnabled(enabled){
   const panel = $("evaluationPanel");
   panel.classList.toggle("is-disabled", !enabled);
   panel.setAttribute("aria-disabled", String(!enabled));
-  $("evaluationReference").disabled = !enabled;
+  evaluationReference.disabled = !enabled;
   $("compareVisual").disabled = !enabled;
   for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
   if (!enabled){
@@ -406,7 +412,7 @@ function renderComparison(){
   $("filteredDistance").textContent = "—";
   $("distanceReduction").textContent = "No disponible";
   if (!result?.detected){
-    const requested = $("evaluationReference").value;
+    const requested = evaluationReference.value;
     $("referenceLabel").textContent = requested ? `Referencia: ${requested}` : "Referencia: candidata automática";
     $("comparisonStatus").textContent = "Esperando referencia compatible";
     $("comparisonNote").textContent = result?.reason || "Compara al detectar una seña compatible.";
@@ -423,7 +429,7 @@ function renderComparison(){
     executionStatus.classList.add("is-unavailable");
     return;
   }
-  const requested = $("evaluationReference").value;
+  const requested = evaluationReference.value;
   const mainPrediction = selectActivePrediction(result.filteredPrediction);
   const reference = requested || mainPrediction?.label ||
     result.filteredPrediction?.label || result.rawPrediction?.label;
