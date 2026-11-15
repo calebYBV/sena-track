@@ -38,7 +38,9 @@ test("the interface has only translator and settings views with comparison contr
   assert.match(html, /<option value="second">Segundo orden<\/option>/);
   assert.doesNotMatch(html, /<option value="off">/);
   assert.match(html, /id="edoContents"/);
-  assert.match(html, /id="traceCoordinate"/);
+  assert.doesNotMatch(html, /id="traceCoordinate"/);
+  assert.match(html, /Seguimiento general en tiempo real/);
+  assert.match(html, /desplazamientos RMS 2D/);
   assert.match(html, /Análisis EDO en tiempo real/);
   const edoTemplate = html.slice(html.indexOf('<template id="edoContents">'),
     html.indexOf('<section class="card white edo-settings"'));
