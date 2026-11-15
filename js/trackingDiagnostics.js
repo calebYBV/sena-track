@@ -18,6 +18,7 @@ const QUIET_WINDOW_MS = 1500;
 const QUIET_ENTRY_SPEED = 3;
 const QUIET_EXIT_SPEED = 6;
 const QUIET_DETECTION_WINDOW_MS = 500;
+const MIN_QUIET_DETECTION_SPAN_MS = 350;
 const MIN_QUIET_SAMPLES = 12;
 const MIN_QUIET_SPAN_MS = 1400;
 const METRIC_UPDATE_INTERVAL_MS = 200;
@@ -91,7 +92,7 @@ function quietMotion(history, timestamp){
   const later = history.filter(sample => sample.time >= midpoint && sample.time <= timestamp);
   const span = history.length > 1
     ? history.at(-1).time - history[0].time : 0;
-  if (earlier.length < 3 || later.length < 3){
+  if (span < MIN_QUIET_DETECTION_SPAN_MS || earlier.length < 3 || later.length < 3){
     return { score: null, span };
   }
 
@@ -461,7 +462,7 @@ export function createTrackingDiagnostics(){
     motionHistory = motionHistory.filter(sample =>
       timestamp - sample.time <= QUIET_DETECTION_WINDOW_MS);
     const { score: robustMotion, span: detectionSpan } = quietMotion(motionHistory, timestamp);
-    if (!quiet && detectionSpan >= QUIET_DETECTION_WINDOW_MS &&
+    if (!quiet && detectionSpan >= MIN_QUIET_DETECTION_SPAN_MS &&
         robustMotion !== null && robustMotion <= QUIET_ENTRY_SPEED){
       quiet = true;
       quietSince = timestamp;
@@ -487,4 +488,39 @@ export function createTrackingDiagnostics(){
   }
 
   return { update, reset };
+}
+
+export function createTrackingDiagnosticsSession({ onReset, onUpdate } = {}){
+  let active = false;
+  let generation = 0;
+
+  function reset(reason){
+    generation++;
+    onReset?.(reason, active);
+    return generation;
+  }
+
+  function setActive(enabled){
+    const next = Boolean(enabled);
+    if (next === active) return false;
+    active = next;
+    reset(next
+      ? "Nueva sesión de reconocimiento; sincronizando cuadros."
+      : "Inicia el reconocimiento para visualizar el análisis EDO.");
+    return true;
+  }
+
+  function update(rawFrame, filteredFrame, timestamp, frameGeneration = generation){
+    if (!active || frameGeneration !== generation) return false;
+    onUpdate?.(rawFrame, filteredFrame, timestamp);
+    return true;
+  }
+
+  return {
+    isActive: () => active,
+    generation: () => generation,
+    setActive,
+    reset,
+    update
+  };
 }

@@ -488,11 +488,13 @@ function updateTrackingMetrics(metrics){
   $("displacementFilteredValue").textContent = metrics.displacementFiltered == null
     ? "—" : metrics.displacementFiltered.toFixed(2);
   $("displacementComparison").textContent = metrics.displacementChange == null
-    ? metrics.displacementAssessment || "Comparación porcentual no calculable"
+    ? metrics.displacementRaw == null
+      ? metrics.displacementAssessment || metrics.status
+      : metrics.displacementAssessment || "Comparación porcentual no calculable"
     : `Desplazamiento observado: ${metrics.displacementChange > 0 ? "+" : ""}` +
       `${metrics.displacementChange.toFixed(1)} % con EDO`;
   $("displacementAssessment").textContent = metrics.displacementRaw == null
-    ? metrics.status
+    ? metrics.displacementAssessment || metrics.status
     : metrics.displacementAssessment ||
       "Base demasiado pequeña para calcular el porcentaje";
 
@@ -501,13 +503,15 @@ function updateTrackingMetrics(metrics){
   $("vibrationFilteredValue").textContent = metrics.vibrationFiltered == null
     ? "—" : metrics.vibrationFiltered.toFixed(3);
   $("vibrationReduction").textContent = metrics.vibrationReduction == null
-    ? metrics.vibrationRaw !== null && metrics.vibrationRaw <= 0.01
+    ? metrics.vibrationRaw == null
+      ? metrics.quietReason || metrics.status
+      : metrics.vibrationRaw <= 0.01
       ? "Porcentaje no calculable: valor base demasiado pequeño"
       : metrics.vibrationAssessment || "Porcentaje no calculable"
     : `Variación: ${metrics.vibrationReduction > 0 ? "+" : ""}` +
       `${metrics.vibrationReduction.toFixed(1)} % con EDO`;
   $("stabilityAssessment").textContent = metrics.vibrationAssessment ||
-    (metrics.vibrationRaw == null ? "Sin medición disponible" : "Sin diferencia medible");
+    (metrics.vibrationRaw == null ? metrics.quietReason : "Sin diferencia medible");
   $("vibrationProgress").value = metrics.vibrationProgress;
   $("vibrationProgress").setAttribute("aria-valuenow",
     String(metrics.vibrationProgress));
@@ -518,16 +522,16 @@ function updateTrackingMetrics(metrics){
   $("trackingCalculationStatus").textContent = metrics.status;
 }
 
-function resetCoordinateTrace(){
+function resetCoordinateTrace(status = "Esperando manos o rostro detectados."){
   lastTraceFrame = null;
   lastTraceUpdate = -Infinity;
   traceSamples.length = 0;
-  $("traceStatus").textContent = "Esperando manos o rostro detectados.";
+  $("traceStatus").textContent = status;
   drawCoordinateTrace();
 }
 
 function clearForUser(){
-  resetCoordinateTrace();
+  resetCoordinateTrace("Inicia el reconocimiento para visualizar el análisis EDO.");
   state.phrase = "";
   phraseEl.textContent = "";
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();

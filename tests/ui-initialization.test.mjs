@@ -204,6 +204,28 @@ test("tracking UI renders both branches, relative changes, and quiet-window prog
   });
   assert.match(elements.get("displacementComparison").textContent, /porcentaje no calculable/i);
   assert.match(elements.get("vibrationReduction").textContent, /base demasiado pequeñ/i);
+
+  const idleMessage = "Inicia el reconocimiento para visualizar el análisis EDO.";
+  ui.resetCoordinateTrace(idleMessage);
+  ui.updateTrackingMetrics({
+    displacementRaw: null,
+    displacementFiltered: null,
+    displacementChange: null,
+    displacementAssessment: idleMessage,
+    vibrationRaw: null,
+    vibrationFiltered: null,
+    vibrationReduction: null,
+    vibrationAssessment: null,
+    vibrationProgress: 0,
+    quietReason: idleMessage,
+    status: idleMessage,
+    note: "Nota de análisis"
+  });
+  assert.equal(elements.get("displacementRawValue").textContent, "—");
+  assert.equal(elements.get("vibrationRawValue").textContent, "—");
+  assert.equal(elements.get("vibrationProgress").value, 0);
+  assert.equal(elements.get("traceStatus").textContent, idleMessage);
+  assert.equal(elements.get("trackingCalculationStatus").textContent, idleMessage);
 });
 
 test("the EDO template is mounted before createUI initializes its references", async () => {

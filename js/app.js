@@ -49,6 +49,7 @@ const recognition = createRecognition({ state, dom });
 ui.refreshReferences();
 ui.refreshFilterControls();
 const training = createTraining({ state, dom, ui, storage, recognition });
+state.onRecognitionChange = enabled => camera.setDiagnosticsActive(enabled);
 const evaluationCapture = createEvaluationCapture({
   state,
   dom,

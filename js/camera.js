@@ -1,7 +1,10 @@
 import { HandLandmarker, FaceLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
 import { createEdoFilter } from "./filters.js";
 import { extractFaceFeatures } from "./holistic.js";
-import { createTrackingDiagnostics } from "./trackingDiagnostics.js";
+import {
+  createTrackingDiagnostics,
+  createTrackingDiagnosticsSession
+} from "./trackingDiagnostics.js";
 import {
   isCurrentRecognitionResult,
   selectActivePrediction
@@ -24,9 +27,17 @@ let activeHand = null, lastTime = -1;
 const edo = createEdoFilter();
 let lastComparisonAt = -Infinity;
 const trackingDiagnostics = createTrackingDiagnostics();
+let diagnosticsSession;
 
 function resetTrackingDiagnostics(note = "Seguimiento interrumpido; sincronizando nuevas observaciones."){
-  updateTrackingMetrics(trackingDiagnostics.reset(note));
+  const active = diagnosticsSession?.isActive() || false;
+  const message = active ? note : "Inicia el reconocimiento para visualizar el análisis EDO.";
+  const metrics = trackingDiagnostics.reset(message);
+  if (!active){
+    metrics.quietReason = message;
+    metrics.displacementAssessment = message;
+  }
+  updateTrackingMetrics(metrics);
 }
 
 function updateTrackingMeasurements(rawFrame, filteredFrame, timestamp){
@@ -35,6 +46,25 @@ function updateTrackingMeasurements(rawFrame, filteredFrame, timestamp){
     rawFrame, filteredFrame, timestamp, aspect, state.filterConfig
   );
   if (metrics.shouldUpdate) updateTrackingMetrics(metrics);
+}
+
+diagnosticsSession = createTrackingDiagnosticsSession({
+  onReset: (reason, active) => {
+    resetTrackingDiagnostics(active
+      ? reason
+      : "Inicia el reconocimiento para visualizar el análisis EDO.");
+    ui.resetCoordinateTrace(active
+      ? "Sincronizando una nueva sesión de reconocimiento…"
+      : "Inicia el reconocimiento para visualizar el análisis EDO.");
+  },
+  onUpdate: (rawFrame, filteredFrame, timestamp) => {
+    ui.updateCoordinateTrace(rawFrame, filteredFrame, timestamp);
+    updateTrackingMeasurements(rawFrame, filteredFrame, timestamp);
+  }
+});
+
+function setDiagnosticsActive(active){
+  diagnosticsSession.setActive(active);
 }
 
 function releaseMedia(){
@@ -77,8 +107,9 @@ function stop(){
   frameId = null;
   releaseMedia();
   evaluationCapture.cancel("Cámara detenida; la captura de evaluación no se guardó.");
-  resetTrackingDiagnostics("Cámara inactiva; datos de seguimiento no disponibles.");
-  ui.resetCoordinateTrace();
+  if (!diagnosticsSession.setActive(false)){
+    diagnosticsSession.reset("Cámara detenida; datos de seguimiento no disponibles.");
+  }
   setEvaluationEnabled(true);
   if (interruptedCapture) setNote("Captura cancelada al salir del Traductor; no se guardó.");
   refreshButtons();
@@ -92,15 +123,13 @@ function stop(){
 function resetFilters(){
   edo.reset();
   lastComparisonAt = -Infinity;
-  resetTrackingDiagnostics("Métricas reiniciadas por cambio de filtro.");
-  ui.resetCoordinateTrace();
+  diagnosticsSession.reset("Métricas reiniciadas por cambio de filtro.");
 }
 
 function resetFilterHistory(){
   edo.reset();
   lastComparisonAt = -Infinity;
-  resetTrackingDiagnostics("Métricas reiniciadas al comenzar una captura.");
-  ui.resetCoordinateTrace();
+  diagnosticsSession.reset("Métricas reiniciadas al comenzar una captura.");
 }
 
 window.addEventListener("pagehide", stop);
@@ -183,6 +212,7 @@ function processFrame(){
     }
     const timestamp = performance.now();
     const recognitionGeneration = state.recognitionGeneration;
+    const diagnosticsGeneration = diagnosticsSession.generation();
     const results = landmarker.detectForVideo(video, timestamp);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     const activeIdentities = [];
@@ -209,8 +239,9 @@ function processFrame(){
       faceLandmarks: face?.filteredLandmarks,
       faceFeatures: face?.filteredFeatures
     };
-    ui.updateCoordinateTrace(rawFrame, filteredFrame, timestamp);
-    updateTrackingMeasurements(rawFrame, filteredFrame, timestamp);
+    diagnosticsSession.update(
+      rawFrame, filteredFrame, timestamp, diagnosticsGeneration
+    );
     const presence = {
       Left: !!handTracks.Left,
       Right: !!handTracks.Right,
@@ -292,7 +323,7 @@ function processFrame(){
     } else {
       if (missingFrames === 0){
         resetTracking();
-        resetTrackingDiagnostics();
+        if (diagnosticsSession.isActive()) resetTrackingDiagnostics();
         state.cand = null; state.candCount = 0; state.committed = null;
       }
       const trainingCaptureMissing = (state.motion?.purpose === "train" &&
@@ -338,7 +369,7 @@ function loop(){
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     edo.reset();
-    resetTrackingDiagnostics();
+    if (diagnosticsSession.isActive()) resetTrackingDiagnostics();
     resetTracking();
     activeHand = null;
     missingFrames = 0;
@@ -442,5 +473,5 @@ async function start(){
   frameId = requestAnimationFrame(loop);
 }
 
-return { start, stop, resetFilters, resetFilterHistory };
+return { start, stop, resetFilters, resetFilterHistory, setDiagnosticsActive };
 }
