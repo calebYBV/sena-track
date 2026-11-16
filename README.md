@@ -298,3 +298,19 @@ Indica:
 8. Cuál es el enlace del Pull Request.
 
 **RESULTADO ESPERADO:** un README completo, profesional, actualizado y accesible, acompañado de una licencia MIT válida que permita el uso libre del código propio de Seña-Track, preservando el reconocimiento de sus autores.
+
+## Recuperación de la sincronización de muestras
+
+Las capturas pendientes se conservan en IndexedDB, por cuenta. La sincronización
+confirma cada muestra por separado; las referencias previamente confirmadas y
+compatibles con el filtro EDO de primer orden pueden seguir reconociéndose.
+El estado indica la operación, la muestra y el número que continúa pendiente.
+Una respuesta perdida se comprueba contra el contenido remoto antes de confirmar
+la captura; una discrepancia se conserva para revisión, sin sobrescribir datos.
+
+Si aparece un error, conserva los datos del navegador y reintenta desde la
+interfaz con la misma cuenta. Revisa la operación y el mensaje de Supabase:
+una denegación de permisos, una interrupción de red, una inserción y un error de
+Storage requieren comprobaciones distintas. No borres IndexedDB ni localStorage
+para resolverlo. Evita editar la biblioteca simultáneamente en varias pestañas;
+la coordinación de escrituras de la caché es por instancia de la aplicación.
