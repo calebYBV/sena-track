@@ -4,6 +4,7 @@ import { webcrypto } from "node:crypto";
 import { createRecognition } from "../js/recognition.js";
 import { createStorage } from "../js/storage.js";
 import { prepareSamplePayload } from "../js/sampleFormat.js";
+import { readSampleBackup } from "../js/sampleBackup.js";
 
 globalThis.crypto ||= webcrypto;
 
@@ -117,6 +118,9 @@ class Query {
     return this;
   }
   in(key, values){ this.filters.push(row => values.includes(row[key])); return this; }
+  gt(key, value){ this.filters.push(row => row[key] > value); return this; }
+  order(key){ this.orderKey = key; return this; }
+  limit(value){ this.limitValue = value; return this; }
   not(key, operator, value){
     this.filters.push(row => operator === "is" && value === null
       ? row[key] !== null : true);
@@ -162,8 +166,10 @@ class Query {
           this.eqFields.has("client_id")){
         return { data: null, error: new Error("Supabase sample verification unavailable") };
       }
+      const rows = this.rows().filter(row => this.filters.every(filter => filter(row)));
+      if (this.orderKey) rows.sort((a, b) => a[this.orderKey] < b[this.orderKey] ? -1 : a[this.orderKey] > b[this.orderKey] ? 1 : 0);
       return {
-        data: this.rows().filter(row => this.filters.every(filter => filter(row))),
+        data: this.limitValue ? rows.slice(0, Math.min(this.limitValue, database.maxRows || this.limitValue)) : rows,
         error: null
       };
     }
@@ -200,7 +206,7 @@ class Query {
         return { data: null, error: new Error("Duplicate client_id") };
       }
       const inserted = rows.map(row => ({
-        ...row,
+        ...structuredClone(row),
         id: row.id || `${table}-${++database.nextId}`
       }));
       database[table].push(...inserted);
@@ -226,9 +232,10 @@ function makeClient(database){
           const blob = database.files.get(path);
           return blob
             ? { data: blob, error: null }
-            : { data: null, error: new Error("Object not found") };
+            : { data: null, error: { message: "Object not found", status: 404 } };
         },
         async list(folder, { search } = {}){
+          if (database.failStorageList) return { data: null, error: { message: "Storage list forbidden", status: 403 } };
           const names = [...database.files.keys()]
             .filter(path => path.startsWith(`${folder}/`))
             .map(path => ({ name: path.slice(folder.length + 1) }))
@@ -283,7 +290,7 @@ function makeHarness({
   globalThis.indexedDB = indexedDB;
   const elements = new Map();
   for (const id of ["tol", "tolM", "dur", "speechEnabled", "btnImportLocal",
-    "syncRetry", "btnExport", "btnImport", "file", "btnReset"]){
+    "syncRetry", "btnExport", "btnBackup", "btnRestoreBackup", "backupFile", "btnImport", "file", "btnReset"]){
     elements.set(id, {
       value: id === "tol" ? "0.8" : id === "tolM" ? "0.7" : id === "dur" ? "2" : "",
       checked: true,
@@ -1027,4 +1034,184 @@ test("a capture not yet queued while an upload finishes is not discarded", async
   assert.equal(harness.state.samples[2].syncStatus, "pending");
   assert.equal(await harness.storage.saveAll(), true);
   assert.deepEqual(harness.indexedDB.records.get("account-a").samples.map(sample => sample.l), ["A", "B", "C"]);
+});
+
+test("private backup preserves all statuses and restores missing pending captures without duplicates", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.database.failSignRead = true;
+  const pending = { ...staticSample("Pendiente"), syncId: "pending-1", extra: undefined };
+  harness.state.samples.push(pending, { ...staticSample("Inválida", 0, "invalid"), syncId: "invalid-1", f: [NaN] },
+    { ...staticSample("Sin verificar", 0, "unverified"), syncId: "unverified-1" });
+  assert.equal(await harness.storage.saveAll(), false);
+  const backup = await harness.storage.exportBackup();
+  assert.deepEqual({ ...backup.counts }, { saved: 1, pending: 1, invalid: 1, unverified: 1 });
+  const decoded = await readSampleBackup(backup, "account-a");
+  assert.ok(Number.isNaN(decoded.samples[2].f[0]));
+  const cache = harness.indexedDB.records.get("account-a");
+  cache.samples = cache.samples.filter(sample => sample.syncId !== "pending-1");
+  assert.equal(await harness.storage.restoreBackup(backup), 1);
+  assert.deepEqual(harness.indexedDB.records.get("account-a").samples.at(-1), pending);
+  assert.equal(await harness.storage.restoreBackup(backup), 0);
+  assert.equal(harness.database.sign_samples.length, 1);
+});
+
+test("private backup rejects tampering, foreign accounts and conflicting captures without writes", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  const backup = await harness.storage.exportBackup();
+  const before = structuredClone(harness.indexedDB.records.get("account-a"));
+  await assert.rejects(harness.storage.restoreBackup({ ...backup, snapshot: backup.snapshot + " " }), /SHA-256/);
+  await assert.rejects(harness.storage.restoreBackup({ ...backup, ownerId: "account-b" }), /otra cuenta/);
+  harness.indexedDB.records.get("account-a").samples[0].f[0] = 9;
+  const modified = structuredClone(harness.indexedDB.records.get("account-a"));
+  await assert.rejects(harness.storage.restoreBackup(backup), /contenido diferente/);
+  assert.deepEqual(harness.indexedDB.records.get("account-a"), modified);
+  assert.notDeepEqual(modified, before);
+});
+
+test("paginated reads include captures when the server enforces a lower page limit", async () => {
+  const database = makeDatabase();
+  database.maxRows = 2;
+  for (let i = 0; i < 6; i++){
+    const sign = remoteSign("account-a", `sign-${i}`, `Sign ${i}`);
+    database.signs.push(sign);
+    database.sign_samples.push(remoteSample("account-a", sign.id, `extra-${i}`));
+  }
+  const harness = makeHarness({ database });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.equal(harness.state.samples.length, 7);
+});
+
+test("a conflicting or invalid capture does not prevent independent captures from syncing", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push({ ...staticSample("A", 0.9), syncId: "capture-a" },
+    { ...staticSample("Inválida"), f: [1] }, staticSample("Correcta", 0.3));
+  assert.equal(await harness.storage.saveAll(), false);
+  const cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.samples[1].syncStatus, "pending");
+  assert.equal(cache.samples[2].syncStatus, "pending");
+  assert.equal(cache.samples[3].syncStatus, "saved");
+  assert.match(harness.issues.at(-1).join(" "), /no coincide.*Contenido incompatible/);
+});
+
+test("a successful insert is not confirmed when the subsequent read fails or content differs", async () => {
+  for (const corrupt of [false, true]){
+    const harness = makeHarness();
+    await harness.storage.loadUserLibrary("account-a");
+    harness.state.samples.push(staticSample("B", 0.1));
+    harness.database.afterSampleInsert = () => {
+      if (corrupt) harness.database.sign_samples.at(-1).payload.f[0] = 0.9;
+      else harness.database.failSampleVerify = true;
+    };
+    assert.equal(await harness.storage.saveAll(), false);
+    assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+    assert.match(harness.statuses.at(-1).text, corrupt ? /contenido remoto no coincide/i : /verification unavailable/);
+  }
+});
+
+test("a foreign ownership marker is preserved but never uploaded", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push({ ...staticSample("Ajena"), verifiedUserId: "account-b" });
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+  assert.equal(harness.database.sign_samples.length, 1);
+  assert.match(harness.statuses.at(-1).text, /otra cuenta/);
+});
+
+test("backup restores multiple anonymous captures and matches one later assigned a sync id", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.database.failSignRead = true;
+  harness.state.samples.push(staticSample("Sin identificador", 0.4), staticSample("Sin identificador", 0.4));
+  assert.equal(await harness.storage.saveAll(), false);
+  const backup = await harness.storage.exportBackup();
+  const cache = harness.indexedDB.records.get("account-a");
+  cache.samples.pop();
+  cache.samples.at(-1).syncId = "assigned-after-backup";
+  cache.samples.at(-1).syncStatus = "saved";
+  assert.equal(await harness.storage.restoreBackup(backup), 1);
+  assert.equal(await harness.storage.restoreBackup(backup), 0);
+  assert.equal(harness.indexedDB.records.get("account-a").samples.length, 3);
+});
+
+test("a backup from one authenticated account cannot be restored into another", async () => {
+  const indexedDB = new MemoryIndexedDB();
+  const database = makeDatabase();
+  const first = makeHarness({ indexedDB, database });
+  await first.storage.loadUserLibrary("account-a");
+  const backup = await first.storage.exportBackup();
+  const second = makeHarness({ indexedDB, database, accountId: "account-b" });
+  await second.storage.loadUserLibrary("account-b");
+  const before = structuredClone(indexedDB.records.get("account-b"));
+  await assert.rejects(second.storage.restoreBackup(backup), /otra cuenta/);
+  assert.deepEqual(indexedDB.records.get("account-b"), before);
+});
+
+test("loading a pending queue does not upload before the user can create a backup", async () => {
+  const indexedDB = new MemoryIndexedDB();
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: true,
+    samples: [staticSample("Pendiente")], motions: [], pendingDeletes: []
+  });
+  const harness = makeHarness({ indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.equal(harness.database.sampleInsertAttempts, 0);
+  assert.equal((await harness.storage.exportBackup()).counts.pending, 1);
+  assert.equal(await harness.storage.retrySync(), true);
+  assert.equal(harness.database.sampleInsertAttempts, 1);
+});
+
+test("restoring a missing confirmed entry does not trust a backup as remote proof or discard live captures", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  const backup = await harness.storage.exportBackup();
+  harness.indexedDB.records.get("account-a").samples = [];
+  harness.state.samples = [staticSample("Aún no en cola", 0.3)];
+  assert.equal(await harness.storage.restoreBackup(backup), 1);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[0].syncStatus, "unverified");
+  assert.equal(harness.state.samples[0].l, "Aún no en cola");
+  assert.equal(harness.state.samples[1].syncStatus, "unverified");
+  assert.equal(recognitionFor(harness.state).classify(vector(0)), null);
+  assert.equal(await harness.storage.restoreBackup(backup), 0);
+});
+
+test("a 403 on Storage download keeps a large capture pending and reports permissions", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  const sample = staticSample("Grande");
+  sample.extra = "x".repeat(70_000);
+  sample.syncId = "large-403";
+  harness.state.samples.push(sample);
+  harness.database.downloadErrors = new Map([
+    ["account-a/large-403.json", { message: "Storage forbidden", status: 403 }]
+  ]);
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+  assert.match(harness.statuses.at(-1).text, /Storage forbidden.*HTTP: 403.*Permisos/);
+  assert.equal(harness.database.files.size, 0);
+});
+
+test("a remote payload with inconsistent required components is not recognized", async () => {
+  const database = makeDatabase();
+  const components = { left: true, right: false, face: false };
+  const frame = {
+    time: 0, presence: { Left: true, Right: false, face: false, faceFeatures: false },
+    hands: { Left: Array.from({ length: 21 }, () => [0, 0, 0]) }
+  };
+  const frames = Array.from({ length: 8 }, (_, i) => ({ ...structuredClone(frame), time: i }));
+  const descriptor = { hands: { Left: vector(0) } };
+  database.sign_samples[0].format_version = 2;
+  database.sign_samples[0].required_components = { left: false, right: true, face: false };
+  database.sign_samples[0].payload = {
+    l: "A", kind: "static", formatVersion: 2, components,
+    rawFrames: frames, filteredFrames: structuredClone(frames),
+    h: descriptor, rh: descriptor
+  };
+  const harness = makeHarness({ database });
+  const result = await harness.storage.loadUserLibrary("account-a");
+  assert.equal(harness.state.samples.length, 0);
+  assert.match(result.invalidReferences[0], /componentes incompatibles/);
 });

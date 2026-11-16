@@ -323,3 +323,50 @@ no una prueba de que sea idéntica al archivo inaccesible. No se restaura ni
 sobrescribe automáticamente ningún objeto. Conserva la caché y consulta los
 detalles antes de solicitar una recuperación manual autorizada. Un fallo de
 descarga también puede deberse a red o permisos, no necesariamente a ausencia.
+
+### Respaldo privado de la cola
+
+En Ajustes, **Crear respaldo local privado** descarga la copia IndexedDB de la cuenta
+activa, incluidos estados originales, identificadores, ajustes y cola de
+eliminaciones. Incluye las muestras pendientes, inválidas y sin verificar,
+además de las confirmadas; el resumen indica cantidades por estado. Es distinto
+de **Exportar señas**, que sirve para intercambio y excluye las pendientes.
+No incluye capturas que existan únicamente en Supabase ni objetos remotos
+inaccesibles; no sustituye un respaldo independiente de la base de datos y
+Storage.
+El respaldo contiene datos biométricos: guárdalo en un lugar privado y seguro,
+no lo publiques ni lo adjuntes a incidencias o CI. No está cifrado. SHA-256
+detecta alteraciones accidentales, pero no autentica el archivo.
+
+Para recuperar capturas, inicia sesión con la misma cuenta y usa
+**Restaurar respaldo privado**. Se comprueba la integridad y propiedad y se
+solicita confirmación. Solo se añaden capturas ausentes; un conflicto de
+identificador o una eliminación pendiente bloquea la restauración sin
+sobrescribir la cola. Se conservan sus estados; las inválidas y sin verificar
+no se importan como referencias utilizables. Al restaurar una captura
+confirmada que ya no existe en la cola, se conserva su estado original en el
+archivo, pero se incorpora como **unverified**: el checksum no demuestra que
+Supabase la haya confirmado. Las pendientes conservan su estado y podrán
+sincronizarse al reintentar o volver a cargar. Los ajustes y eliminaciones
+quedan conservados en el archivo, pero esta operación no los restaura.
+
+Antes de probar una reparación, usa el navegador, perfil, origen web y cuenta
+originales; IndexedDB está aislada por origen. Una instalación en localhost o
+Codespaces no puede leer la cola de la aplicación publicada. No borres datos
+del sitio, cierres el perfil ni uses una pestaña privada. Esta función solo
+estará disponible en ese origen cuando se publique una versión que la incluya.
+Cierra las demás pestañas de la aplicación antes de exportar, restaurar o
+sincronizar: la coordinación actual no cubre escrituras entre pestañas.
+Al iniciar sesión con una cola pendiente no se reintenta automáticamente:
+verifica el resumen del respaldo y guárdalo antes de pulsar **Reintentar**.
+No captures señas ni cambies ajustes antes de respaldar, pues esas acciones
+pueden iniciar la sincronización.
+
+Si el error persiste, comparte únicamente la operación, el código HTTP o SQL y
+las cantidades por estado, eliminando nombres, rutas e identificadores. No
+compartas el JSON, coordenadas, tokens, contraseñas ni capturas de la consola
+que los muestren. El administrador debe comprobar la sesión, migraciones,
+restricciones, RLS de ambas tablas y permisos y límite del bucket privado; no
+debe modificar políticas o datos sin revisar el diagnóstico. Un objeto
+existente solo se reutiliza después de descargar y comparar su contenido; una
+inserción no se considera confirmada hasta releer el registro y sus datos.

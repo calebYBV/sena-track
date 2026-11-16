@@ -7,7 +7,10 @@ import {
   validateSample
 } from "./sampleFormat.js";
 import { isSampleRecognizable, restoreCachedSample } from "./sampleSync.js";
+import { createSampleBackup, mergeBackupCaptures, readSampleBackup } from "./sampleBackup.js";
 import { getSupabaseClient } from "./supabaseClient.js";
+
+class SampleConflictError extends Error {}
 
 export function createStorage({
   state, dom, ui,
@@ -48,14 +51,14 @@ export function createStorage({
         const library = parseLibrary(JSON.parse(localStorage.getItem(key)));
         if (library) return library;
       } catch (error){
-        console.warn(`No se pudo leer ${key} de localStorage.`, error);
+        console.warn(`No se pudo leer ${key} de localStorage.`);
       }
     }
     try {
       const old = JSON.parse(localStorage.getItem(OLD_KEY));
       if (Array.isArray(old)) return { s: old, m: [], filters: null };
     } catch (error){
-      console.warn(`No se pudo leer ${OLD_KEY} de localStorage.`, error);
+      console.warn(`No se pudo leer ${OLD_KEY} de localStorage.`);
     }
     return { s: [], m: [], filters: null };
   }
@@ -120,7 +123,7 @@ export function createStorage({
         return cache;
       }
     } catch (error){
-      console.error("No se pudo recuperar la copia local de la cuenta.", error);
+      console.error("No se pudo recuperar la copia local de la cuenta.");
       throw error;
     }
   }
@@ -196,21 +199,31 @@ export function createStorage({
     };
   }
 
-  async function readRemoteLibrary(client, id){
-    const { data: signs, error: signsError } = await client.from("signs")
-      .select("id,name,kind,sign_language,visibility")
-      .eq("owner_id", id);
-    if (signsError) throw new Error(`Lectura de señas en Supabase: ${signsError.message}`, { cause: signsError });
-    const signById = new Map(signs.map(sign => [sign.id, sign]));
-    const signIds = signs.map(sign => sign.id);
-    let records = [];
-    if (signIds.length){
-      const { data, error } = await client.from("sign_samples")
-        .select("id,owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path")
-        .eq("owner_id", id).in("sign_id", signIds);
-      if (error) throw new Error(`Lectura de muestras en Supabase: ${error.message}`, { cause: error });
-      records = data;
+  async function readPages(client, table, columns, id, operation){
+    const records = [];
+    let lastId = null;
+    for (;;){
+      let query = client.from(table).select(columns).eq("owner_id", id)
+        .order("id").limit(500);
+      if (lastId) query = query.gt("id", lastId);
+      const { data, error } = await query;
+      if (error) throw new Error(`${operation}: ${error.message}`, { cause: error });
+      if (!Array.isArray(data)) throw new Error(`${operation}: respuesta inválida.`);
+      if (!data.length) return records;
+      const nextId = data.at(-1).id;
+      if (!nextId || nextId === lastId) throw new Error(`${operation}: paginación inválida.`);
+      records.push(...data);
+      lastId = nextId;
     }
+  }
+
+  async function readRemoteLibrary(client, id){
+    const signs = await readPages(client, "signs", "id,name,kind,sign_language,visibility", id,
+      "Lectura de señas en Supabase");
+    const signById = new Map(signs.map(sign => [sign.id, sign]));
+    const records = await readPages(client, "sign_samples",
+      "id,owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path",
+      id, "Lectura de muestras en Supabase");
 
     const samples = [], motions = [];
     const invalidReferences = [];
@@ -243,7 +256,7 @@ export function createStorage({
         try {
           payload = JSON.parse(await data.text());
         } catch (error){
-          invalidReferences.push(`El archivo ${record.storage_path} no contiene una muestra JSON válida: ${error.message}`);
+          invalidReferences.push(`El archivo ${record.storage_path} no contiene una muestra JSON válida.`);
           continue;
         }
       }
@@ -264,6 +277,11 @@ export function createStorage({
         validateSample(payload, sign.kind);
       } catch (error){
         invalidReferences.push(`La muestra ${record.id} no es válida: ${error.message}`);
+        continue;
+      }
+      if (payload.components &&
+          canonicalJson(payload.components) !== canonicalJson(record.required_components)){
+        invalidReferences.push(`La muestra ${record.id} tiene componentes incompatibles con sus metadatos remotos.`);
         continue;
       }
       persistedPayloads.set(record.client_id, persistedPayload);
@@ -304,7 +322,8 @@ export function createStorage({
     }
     return {
       samples, motions, settings: settingsError ? null : settings,
-      settingsError, invalidReferences, unavailableObjects, persistedPayloads, pending: false, pendingDeletes: []
+      settingsError, invalidReferences, unavailableObjects, persistedPayloads,
+      signs, records, pending: false, pendingDeletes: []
     };
   }
 
@@ -343,6 +362,7 @@ export function createStorage({
       `Muestra ${issue.record.id} de «${issue.sign.name}»: Storage ${issue.record.storage_path}: ${issue.message}`));
     details.push(...remote.invalidReferences.filter(message => !unavailableMessages.has(message)));
     setSyncIssues?.(details);
+    return details;
   }
 
   function mergeRemoteIntoState(remote, cache){
@@ -377,7 +397,7 @@ export function createStorage({
       cached = await readCache(id);
     } catch (error){
       cacheReadError = error;
-      console.error("No se pudo leer la copia local; se intentará cargar la biblioteca remota.", error);
+      console.error("No se pudo leer la copia local; se intentará cargar la biblioteca remota.");
     }
     const initialRevision = cached?.revision;
     if (cached?.pending){
@@ -387,7 +407,6 @@ export function createStorage({
       applySettings(cached.settings);
       setSyncStatus(pendingStatus(cached), "pending");
       renderList();
-      void flushPending();
       return { samples: state.samples, motions: state.motions, settings: cached.settings, pending: true };
     }
     setSyncStatus("Cargando biblioteca…", "loading");
@@ -405,7 +424,6 @@ export function createStorage({
         applySettings(newerCache.settings);
         setSyncStatus(pendingStatus(newerCache), "pending");
         renderList();
-        void flushPending();
         return { samples: state.samples, motions: state.motions, settings: newerCache.settings, pending: true };
       }
       if (cached){
@@ -447,13 +465,12 @@ export function createStorage({
               applySettings(latest.settings);
               setSyncStatus(pendingStatus(latest), "pending");
               renderList();
-              void flushPending();
               return { samples: state.samples, motions: state.motions, settings: latest.settings, pending: true };
             }
           }
         } catch (error){
           cacheWriteError = error;
-          console.error("La biblioteca se cargó, pero no se pudo guardar su caché local.", error);
+          console.error("La biblioteca se cargó, pero no se pudo guardar su caché local.");
         }
       }
       if (remote.invalidReferences.length){
@@ -477,7 +494,7 @@ export function createStorage({
       renderList();
       return { ...remote, settings: effectiveSettings };
     } catch (error){
-      console.error("No se pudo cargar la biblioteca de Supabase.", error);
+      console.error("No se pudo cargar la biblioteca de Supabase.");
       if (userId !== id || userLoadToken !== loadToken){
         return { samples: [], motions: [], loadError: error, cancelled: true };
       }
@@ -632,19 +649,20 @@ export function createStorage({
     } else {
       const path = `${id}/${clientId}.json`;
       const storage = client.storage.from(BUCKET);
-      const { data: objectList, error: listError } = await storage.list(id, { search: `${clientId}.json`, limit: 10 });
-      if (listError) throw new Error(`Consulta de Storage: ${listError.message}`, { cause: listError });
-      if (objectList.some(object => object.name === `${clientId}.json`)){
-        const { data: existingBlob, error } = await storage.download(path);
-        if (error) throw new Error(`Descarga de Storage: ${error.message}`, { cause: error });
+      const { data: existingBlob, error: downloadError } = await storage.download(path);
+      if (downloadError && String(downloadError.statusCode ?? downloadError.status) !== "404"){
+        throw new Error(`Descarga de Storage: ${downloadError.message}`, { cause: downloadError });
+      }
+      if (!downloadError && !existingBlob) throw new Error("Descarga de Storage: respuesta sin datos.");
+      if (existingBlob){
         let existingPayload;
         try {
           existingPayload = JSON.parse(await existingBlob.text());
         } catch (error){
-          throw new Error(`El archivo existente ${path} no se puede validar y se conservará: ${error.message}`);
+          throw new Error(`El archivo existente ${path} no es JSON válido y se conservará.`);
         }
-        if (JSON.stringify(existingPayload) !== JSON.stringify(payload)){
-          throw new Error(`Ya existe una captura diferente en ${path}; no se sobrescribió.`);
+        if (canonicalJson(existingPayload) !== canonicalJson(payload)){
+          throw new SampleConflictError(`Ya existe una captura diferente en ${path}; no se sobrescribió.`);
         }
       } else {
         const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
@@ -655,20 +673,34 @@ export function createStorage({
         ...metadata, payload: null, storage_path: path
       });
       if (insertError){
-        const { data: committed, error: verifyError } = await client.from("sign_samples")
-          .select("sign_id,storage_path").eq("owner_id", id).eq("client_id", clientId).maybeSingle();
-        if (verifyError){
-          throw new Error(`No se pudo confirmar el registro después del error de inserción (${insertError.message}): ${verifyError.message}. El reintento verificará esta muestra antes de duplicarla.`);
-        }
-        if (committed?.storage_path === path && committed.sign_id === signIdValue){
-          existingIds.add(clientId);
-          return;
-        }
-        if (committed){
-          throw new Error(`La captura ya existe con otra ruta de Storage (${insertError.message}); se conservaron ambos archivos y el reintento verificará el registro.`);
-        }
-        throw new Error(`No se pudo registrar la captura (${insertError.message}); se conservó el archivo ${path} para que el reintento no pierda los datos.`);
+        throw new Error(`No se pudo registrar la captura (${insertError.message}); se conservó el archivo ${path} y el reintento verificará el registro.`, { cause: insertError });
       }
+    }
+    const { data: committed, error: verifyError } = await client.from("sign_samples")
+      .select("owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,payload,storage_path")
+      .eq("owner_id", id).eq("client_id", clientId).maybeSingle();
+    if (verifyError) throw new Error(`Verificación de muestra en Supabase: ${verifyError.message}`, { cause: verifyError });
+    if (!committed || committed.owner_id !== id || committed.sign_id !== signIdValue ||
+        committed.client_id !== clientId || committed.format_version !== metadata.format_version ||
+        committed.hand_count !== metadata.hand_count || committed.face_available !== metadata.face_available ||
+        canonicalJson(committed.required_components) !== canonicalJson(metadata.required_components)){
+      throw new Error("No se pudo confirmar la identidad y los metadatos de la muestra remota.");
+    }
+    let persisted = committed.payload;
+    if (bytes > SAMPLE_STORAGE_THRESHOLD_BYTES){
+      const path = `${id}/${clientId}.json`;
+      if (committed.storage_path !== path || committed.payload !== null){
+        throw new Error("La ruta remota de la captura no coincide; se conservó la copia local.");
+      }
+      const { data, error } = await client.storage.from(BUCKET).download(path);
+      if (error || !data) throw new Error(`Verificación de Storage: ${error?.message || "sin datos"}`, { cause: error });
+      try { persisted = JSON.parse(await data.text()); }
+      catch { throw new Error("El archivo remoto no es JSON válido."); }
+    } else if (committed.storage_path !== null){
+      throw new Error("La muestra remota no contiene el payload esperado.");
+    }
+    if (canonicalJson(persisted) !== canonicalJson(payload)){
+      throw new Error("El contenido remoto no coincide con la copia local; se conservaron ambos datos.");
     }
     existingIds.add(clientId);
   }
@@ -714,21 +746,17 @@ export function createStorage({
     const latest = await readCache(id);
     if (!latest || latest.revision !== cache.revision) return false;
     mergeRemoteIntoState(remote, latest);
-    reportRemoteIssues(remote, latest, id);
+    const issues = reportRemoteIssues(remote, latest, id);
     renderList();
     const verifiedByClientId = new Map(
       [...remote.samples, ...remote.motions].map(sample => [sample.syncId, sample])
     );
-    const { data: existingSigns, error: existingSignsError } = await client.from("signs")
-      .select("id,name,kind,sign_language").eq("owner_id", id);
-    if (existingSignsError) throw new Error(`Consulta de señas en Supabase: ${existingSignsError.message}`, { cause: existingSignsError });
-    const signCache = existingSigns;
-    const { data: existingSamples, error: existingSamplesError } = await client.from("sign_samples")
-      .select("client_id").eq("owner_id", id);
-    if (existingSamplesError) throw new Error(`Consulta de identificadores en Supabase: ${existingSamplesError.message}`, { cause: existingSamplesError });
-    const existingIds = new Set(existingSamples.map(sample => sample.client_id));
+    const signCache = remote.signs;
+    const existingIds = new Set(remote.records.map(sample => sample.client_id));
+    const recordByClientId = new Map(remote.records.map(record => [record.client_id, record]));
     const unavailableIds = new Set(remote.unavailableObjects.map(({ record }) => record.client_id));
     let blocked = 0;
+    const sampleErrors = [];
     const all = [
       ...cache.samples.map(sample => ({ sample, kind: "static" })),
       ...cache.motions.map(sample => ({ sample, kind: "motion" }))
@@ -740,6 +768,17 @@ export function createStorage({
         "loading"
       );
       try {
+        if (sample.verifiedUserId && sample.verifiedUserId !== id){
+          throw new SampleConflictError("La captura indica otra cuenta; se conserva sin sincronizar.");
+        }
+        try {
+          prepareSamplePayload(sample, kind);
+        } catch (error){
+          if (error instanceof TypeError || error instanceof RangeError){
+            throw new SampleConflictError(`Contenido incompatible: ${error.message}`, { cause: error });
+          }
+          throw error;
+        }
         const beforeId = structuredClone(sample);
         await ensureSampleId(sample);
         if (beforeId.syncId !== sample.syncId &&
@@ -747,9 +786,17 @@ export function createStorage({
         const remotelyConfirmed = verifiedByClientId.get(sample.syncId);
         if (remotelyConfirmed){
           const localPayload = prepareSamplePayload(sample, kind).payload;
+          const record = recordByClientId.get(sample.syncId);
+          const remoteSign = signCache.find(sign => sign.id === record.sign_id);
           if (remotelyConfirmed.kind !== kind || remotelyConfirmed.l !== sample.l ||
+              remoteSign?.sign_language !== (sample.signLanguage || "LSC") ||
+              sample.components && canonicalJson(sample.components) !== canonicalJson(record.required_components) ||
+              Number.isInteger(sample.captureMeta?.handCount) &&
+                sample.captureMeta.handCount !== record.hand_count ||
+              typeof sample.captureMeta?.faceAvailable === "boolean" &&
+                sample.captureMeta.faceAvailable !== record.face_available ||
               canonicalJson(remote.persistedPayloads.get(sample.syncId)) !== canonicalJson(localPayload)){
-            throw new Error(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la copia local; se conservaron ambos datos.`);
+            throw new SampleConflictError(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la copia local; se conservaron ambos datos.`);
           }
         } else {
           if (existingIds.has(sample.syncId)){
@@ -757,7 +804,7 @@ export function createStorage({
               blocked++;
               continue;
             }
-            throw new Error(`La captura ${sample.syncId} existe en Supabase, pero su referencia no pudo validarse; se conservó la copia local.`);
+            throw new SampleConflictError(`La captura ${sample.syncId} existe en Supabase, pero su referencia no pudo validarse; se conservó la copia local.`);
           }
           const sign = { name: sample.l.trim(), kind, sign_language: sample.signLanguage || "LSC" };
           let signIdValue;
@@ -768,6 +815,11 @@ export function createStorage({
           }
           await uploadSample(client, id, signIdValue, sample, kind, existingIds);
           verifiedByClientId.set(sample.syncId, { ...sample, kind });
+          recordByClientId.set(sample.syncId, {
+            sign_id: signIdValue, required_components: sample.components,
+            hand_count: sample.captureMeta?.handCount,
+            face_available: sample.captureMeta?.faceAvailable
+          });
           remote.persistedPayloads.set(sample.syncId, prepareSamplePayload(sample, kind).payload);
         }
         const beforeConfirmation = structuredClone(sample);
@@ -775,9 +827,15 @@ export function createStorage({
         sample.verifiedUserId = id;
         if (!await checkpointSample(cache, id, kind, beforeConfirmation, sample)) return false;
       } catch (error){
+        if (error instanceof SampleConflictError){
+          blocked++;
+          sampleErrors.push(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}`);
+          continue;
+        }
         throw new Error(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}`, { cause: error });
       }
     }
+    if (sampleErrors.length) setSyncIssues?.([...issues, ...sampleErrors]);
     if (cache.settingsPending){
       const latest = await readCache(id);
       if (latest?.revision !== cache.revision) return false;
@@ -789,7 +847,7 @@ export function createStorage({
         throw new Error(`No se pudieron guardar las preferencias en Supabase: ${error.message}`);
       }
     }
-    return { blocked, invalidReferences: remote.invalidReferences.length };
+    return { blocked, invalidReferences: remote.invalidReferences.length, sampleErrors };
   }
 
   function pendingStatus(cache){
@@ -809,11 +867,22 @@ export function createStorage({
   function errorDetails(error){
     const details = [];
     for (let current = error; current; current = current.cause){
-      for (const [label, value] of [["código", current.code], ["HTTP", current.status], ["detalle", current.details], ["pista", current.hint]]){
+      for (const [label, value] of [["código", current.code], ["HTTP", current.status]]){
         if (value && !details.includes(`${label}: ${value}`)) details.push(`${label}: ${value}`);
       }
     }
     return details.length ? ` (${details.join("; ")})` : "";
+  }
+
+  function errorCategory(error){
+    for (let current = error; current; current = current.cause){
+      if (current.status === 401) return "Autenticación: revisa la sesión.";
+      if (current.status === 403 || current.code === "42501") return "Permisos: revisa RLS y Storage.";
+      if (["42P01", "42703", "PGRST204", "23514"].includes(current.code)) return "Esquema: comprueba las migraciones y restricciones.";
+      if (current.code === "23505" || current.status === 409) return "Conflicto: revisa el identificador y el contenido remoto.";
+      if (/network|fetch|connection|conexión|offline/i.test(current.message || "")) return "Conectividad: comprueba la red y reintenta.";
+    }
+    return "Revisa los detalles de la operación y reintenta.";
   }
 
   async function flushPending(){
@@ -826,8 +895,15 @@ export function createStorage({
       let preferencesSynced = false;
       let lastSyncedUserId = null;
       let unresolvedReferences = 0;
+      let sampleErrors = [];
       let lastPendingStatus = "";
+      let passes = 0;
       do {
+        if (++passes > 5){
+          succeeded = false;
+          if (userId) setSyncStatus("La cola cambió repetidamente durante la sincronización. Las capturas se conservaron; cierra otras pestañas y pulsa Reintentar.", "pending");
+          break;
+        }
         syncRequested = false;
         const id = userId;
         let cache;
@@ -870,23 +946,27 @@ export function createStorage({
           preferencesSynced ||= hadPendingSettings;
           lastSyncedUserId = id;
           unresolvedReferences = completed.invalidReferences;
+          sampleErrors = completed.sampleErrors;
           lastPendingStatus = pendingStatus(cache);
         } catch (error){
           succeeded = false;
-          console.error("La sincronización con Supabase falló.", error);
+          console.error("La sincronización con Supabase falló; consulta el estado de sincronización.");
           let latest;
           try { latest = await readCache(id); } catch (storageError){
-            console.error("No se pudo comprobar la cola local tras el error de red.", storageError);
+            console.error("No se pudo comprobar la cola local tras el error de red.");
           }
           if (userId === id) setSyncStatus(
-            `Error de sincronización: ${error.message}${errorDetails(error)}. ${latest ? pendingStatus(latest) : "No se pudo comprobar la cola local."}`,
+            `Error de sincronización: ${error.message}${errorDetails(error)}. ${latest ? pendingStatus(latest) : "No se pudo comprobar la cola local."} ${errorCategory(error)}`,
             "error"
           );
           break;
         }
       } while (syncRequested);
       if (succeeded && userId && userId === lastSyncedUserId){
-        if (unresolvedReferences){
+        if (sampleErrors.length){
+          succeeded = false;
+          setSyncStatus(`Error de sincronización: ${sampleErrors[0]}. ${lastPendingStatus} Consulta los detalles; las demás capturas válidas se conservaron.`, "error");
+        } else if (unresolvedReferences){
           succeeded = false;
           setSyncStatus(
             `Biblioteca parcialmente disponible; ${unresolvedReferences} referencia(s) remota(s) no disponibles o inválidas. ${lastPendingStatus} Consulta los detalles; no se reparó ni borró ningún archivo.`,
@@ -1078,7 +1158,7 @@ export function createStorage({
       try {
         await importLocalLibrary();
       } catch (error){
-        console.error("No se pudo importar la biblioteca local.", error);
+        console.error("No se pudo importar la biblioteca local.");
         setSyncStatus(`No se pudo preparar la importación: ${error.message}`, "error");
         setNote(`Importación incompleta: ${error.message}`);
       }
@@ -1086,6 +1166,99 @@ export function createStorage({
   });
 
   $("syncRetry").addEventListener("click", () => { void retrySync(); });
+
+  async function exportBackup(){
+    const id = userId;
+    if (!id) throw new Error("Inicia sesión para respaldar la copia local.");
+    const cache = await withCacheWrite(() => readCache(id));
+    if (userId !== id) throw new Error("La cuenta cambió durante la exportación.");
+    if (!cache) throw new Error("No existe una copia local de esta cuenta en este navegador.");
+    const backup = await createSampleBackup(cache, id);
+    if (userId !== id) throw new Error("La cuenta cambió durante la exportación.");
+    return backup;
+  }
+
+  async function restoreBackup(backup){
+    const id = userId;
+    const saved = await readSampleBackup(backup, id);
+    const onAdd = sample => ["saved", "local"].includes(sample.syncStatus)
+      ? { ...sample, syncStatus: "unverified",
+        syncIssue: `El respaldo indicaba ${sample.syncStatus}; no se ha verificado con Supabase.` }
+      : sample;
+    const result = await withCacheWrite(async () => {
+      if (userId !== id) throw new Error("La cuenta cambió durante la restauración.");
+      const cache = await readCache(id);
+      if (userId !== id) throw new Error("La cuenta cambió durante la restauración.");
+      if (!cache) throw new Error("No existe una copia local de esta cuenta; carga primero la biblioteca.");
+      const merged = mergeBackupCaptures(cache, saved, { onAdd });
+      mergeBackupCaptures({ samples: state.samples, motions: state.motions,
+        pendingDeletes: cache.pendingDeletes }, saved, { onAdd });
+      if (!merged.added) return { cache, added: 0 };
+      const next = {
+        ...cache, samples: merged.samples, motions: merged.motions,
+        pending: cache.pending || [...merged.samples, ...merged.motions]
+          .some(sample => sample?.syncStatus === "pending"),
+        revision: (Number.isFinite(cache.revision) ? cache.revision : 0) + 1
+      };
+      await storeCache(next, id);
+      return { cache: next, added: merged.added };
+    });
+    if (userId === id){
+      try {
+        const live = mergeBackupCaptures({ samples: state.samples, motions: state.motions,
+          pendingDeletes: result.cache.pendingDeletes }, saved, { onAdd });
+        for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
+          state[key] = [
+            ...state[key],
+            ...live[key].slice(state[key].length).map(sample => restoreCachedSample(sample, kind, {
+              ownerId: id, cacheUserId: id
+            }))
+          ];
+        }
+      } catch (error){
+        throw new Error(`El respaldo se guardó en IndexedDB, pero la biblioteca en pantalla cambió: ${error.message} No recargues hasta guardar cualquier captura nueva.`);
+      }
+      setSyncStatus(result.cache.pending ? pendingStatus(result.cache) : "Respaldo restaurado; revisa las capturas locales.",
+        result.cache.pending ? "pending" : "saved");
+      renderList();
+    }
+    return result.added;
+  }
+
+  $("btnBackup").onclick = async () => {
+    try {
+      const backup = await exportBackup();
+      const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "sena-track-respaldo-privado.json";
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setNote(`Respaldo local creado (solo IndexedDB, no incluye datos exclusivamente remotos). Estados: ${Object.entries(backup.counts)
+        .map(([status, count]) => `${status}: ${count}`).join(" · ") || "sin capturas"}.`);
+    } catch (error){
+      setSyncStatus(`No se pudo crear el respaldo: ${error.message}`, "error");
+    }
+  };
+  $("btnRestoreBackup").onclick = () => $("backupFile").click();
+  $("backupFile").onchange = async event => {
+    try {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      let backup;
+      try { backup = JSON.parse(await file.text()); }
+      catch { throw new Error("El archivo de respaldo no es JSON válido."); }
+      await readSampleBackup(backup, userId);
+      if (!confirm("El respaldo contiene datos privados. Se añadirán únicamente capturas ausentes de esta misma cuenta, sin sobrescribir las existentes. Las pendientes podrán sincronizarse después. ¿Continuar?")) return;
+      const added = await restoreBackup(backup);
+      setNote(`Respaldo comprobado: ${added} captura(s) restaurada(s). Revisa la cola antes de reintentar.`);
+    } catch (error){
+      setSyncStatus(`No se pudo restaurar el respaldo: ${error.message}`, "error");
+    } finally {
+      event.target.value = "";
+    }
+  };
 
   const exportButton = $("btnExport");
   exportButton.onclick = () => {
@@ -1114,7 +1287,7 @@ export function createStorage({
       for (const sample of library.m) prepareSamplePayload(sample, "motion");
       await importLibrary(library);
     } catch (error){
-      console.error("No se pudo importar la biblioteca JSON.", error);
+      console.error("No se pudo importar la biblioteca JSON.");
       alert(`No se pudo importar el archivo: ${error.message}`);
     } finally {
       event.target.value = "";
@@ -1146,7 +1319,7 @@ export function createStorage({
       state.samples = [];
       state.motions = [];
     } catch (error){
-      console.error("No se pudo preparar el borrado de la biblioteca.", error);
+      console.error("No se pudo preparar el borrado de la biblioteca.");
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       return;
     }
@@ -1162,6 +1335,8 @@ export function createStorage({
     deleteSign,
     importLibrary,
     importLocalLibrary,
+    exportBackup,
+    restoreBackup,
     retrySync,
     clearUser(){
       userId = null;
