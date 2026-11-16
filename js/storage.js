@@ -866,6 +866,7 @@ export function createStorage({
       let lastSyncedUserId = null;
       let unresolvedReferences = 0;
       let unresolvedOperations = 0;
+      let lastSyncIssues = [];
       let lastPendingStatus = "";
       do {
         syncRequested = false;
@@ -911,6 +912,7 @@ export function createStorage({
           lastSyncedUserId = id;
           unresolvedReferences = completed.invalidReferences;
           unresolvedOperations = completed.blocked + completed.deferredDeletes.length;
+          lastSyncIssues = completed.syncIssues;
           lastPendingStatus = pendingStatus(cache);
         } catch (error){
           succeeded = false;
@@ -930,7 +932,7 @@ export function createStorage({
         if (unresolvedReferences || unresolvedOperations){
           succeeded = false;
           setSyncStatus(
-            `Biblioteca parcialmente disponible; ${unresolvedReferences} referencia(s) remota(s) no disponibles o inválidas; ${unresolvedOperations} operación(es) aún pendientes. ${lastPendingStatus} Consulta los detalles; las capturas se conservaron.`,
+            `Biblioteca parcialmente disponible; ${unresolvedReferences} referencia(s) remota(s) no disponibles o inválidas; ${unresolvedOperations} operación(es) aún pendientes. ${lastPendingStatus}. ${lastSyncIssues[0] || ""} Consulta los detalles; las capturas se conservaron.`,
             "error"
           );
         } else {

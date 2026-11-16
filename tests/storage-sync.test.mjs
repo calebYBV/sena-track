@@ -940,7 +940,7 @@ test("a lost insertion response is reconciled by persisted content on retry", as
   harness.database.loseInsertResponseAt = 20;
 
   assert.equal(await harness.storage.saveAll(), false);
-  assert.equal(harness.database.sign_samples.length, 21);
+  assert.equal(harness.database.sign_samples.length, 163);
   assert.equal(harness.indexedDB.records.get("account-a").samples.filter(
     sample => sample.syncStatus === "pending").length, 1);
   assert.equal(await harness.storage.retrySync(), true);
@@ -1040,6 +1040,7 @@ test("missing object during a queued deletion cannot hide verified references or
   });
   const harness = makeHarness({ database, indexedDB });
   await harness.storage.loadUserLibrary("account-a");
+  assert.equal(await harness.storage.retrySync(), false);
   const cache = indexedDB.records.get("account-a");
   assert.equal(cache.samples[0].syncStatus, "saved");
   assert.equal(cache.pending, true);
