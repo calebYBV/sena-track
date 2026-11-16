@@ -349,7 +349,7 @@ export function createStorage({
     });
   }
 
-  function reportRemoteIssues(remote, cache, id){
+  function reportRemoteIssues(remote, cache, id, extraIssues = []){
     const details = remote.unavailableObjects.map(issue => {
       const { record, sign, message } = issue;
       const candidate = localRecoveryCandidate(cache, id, issue);
@@ -361,18 +361,37 @@ export function createStorage({
     const unavailableMessages = new Set(remote.unavailableObjects.map(issue =>
       `Muestra ${issue.record.id} de «${issue.sign.name}»: Storage ${issue.record.storage_path}: ${issue.message}`));
     details.push(...remote.invalidReferences.filter(message => !unavailableMessages.has(message)));
+    details.push(...extraIssues);
     setSyncIssues?.(details);
     return details;
   }
 
+  // Verify stored content before releasing a pending local capture for recognition.
   function mergeRemoteIntoState(remote, cache){
     const deleted = cache?.pendingDeletes || [];
     for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
-      const existing = new Set(state[key].map(sample => sample.syncId).filter(Boolean));
-      const additions = remote[key].filter(sample =>
-        !existing.has(sample.syncId) &&
-        !deleted.some(item => item.kind === kind && item.name === sample.l));
-      if (additions.length) state[key] = [...state[key], ...additions];
+      const byId = new Map(state[key].map((sample, i) => [sample.syncId, i]));
+      const updated = [...state[key]];
+      for (const verified of remote[key]){
+        if (deleted.some(item => item.kind === kind && item.name === verified.l)) continue;
+        const index = byId.get(verified.syncId);
+        if (index === undefined){
+          byId.set(verified.syncId, updated.length);
+          updated.push(verified);
+          continue;
+        }
+        const local = updated[index];
+        if (local.syncStatus !== "pending" || local.l !== verified.l) continue;
+        try {
+          const actual = remote.persistedPayloads.get(verified.syncId);
+          if (actual && canonicalJson(prepareSamplePayload(local, kind).payload) === canonicalJson(actual)){
+            updated[index] = verified;
+          }
+        } catch {
+          // Keep the original local sample when the identity cannot be verified.
+        }
+      }
+      state[key] = updated;
     }
   }
 
@@ -738,16 +757,24 @@ export function createStorage({
   async function syncRemote(cache, id){
     if (!id) throw new Error("No hay una cuenta activa.");
     const client = await getSupabaseClientImpl();
-    for (const removed of cache.pendingDeletes || []){
-      await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds);
-    }
+    // Always recover valid references before processing potentially failing deletes.
     const remote = await readRemoteLibrary(client, id);
     if (userId !== id) return false;
     const latest = await readCache(id);
     if (!latest || latest.revision !== cache.revision) return false;
     mergeRemoteIntoState(remote, latest);
-    const issues = reportRemoteIssues(remote, latest, id);
+    reportRemoteIssues(remote, latest, id);
     renderList();
+    const deferredDeletes = [];
+    const syncIssues = [];
+    for (const removed of cache.pendingDeletes || []){
+      try {
+        await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds);
+      } catch (error){
+        deferredDeletes.push(removed);
+        syncIssues.push(`Eliminación en espera de «${removed.name}» (${removed.kind}): ${error.message}`);
+      }
+    }
     const verifiedByClientId = new Map(
       [...remote.samples, ...remote.motions].map(sample => [sample.syncId, sample])
     );
@@ -756,7 +783,6 @@ export function createStorage({
     const recordByClientId = new Map(remote.records.map(record => [record.client_id, record]));
     const unavailableIds = new Set(remote.unavailableObjects.map(({ record }) => record.client_id));
     let blocked = 0;
-    const sampleErrors = [];
     const all = [
       ...cache.samples.map(sample => ({ sample, kind: "static" })),
       ...cache.motions.map(sample => ({ sample, kind: "motion" }))
@@ -767,6 +793,7 @@ export function createStorage({
         `Sincronizando muestra ${index + 1} de ${all.length}; ${pendingStatus(cache).replace(/^Pendiente: /, "")}…`,
         "loading"
       );
+      let retrySnapshot = structuredClone(sample);
       try {
         if (sample.verifiedUserId && sample.verifiedUserId !== id){
           throw new SampleConflictError("La captura indica otra cuenta; se conserva sin sincronizar.");
@@ -783,6 +810,7 @@ export function createStorage({
         await ensureSampleId(sample);
         if (beforeId.syncId !== sample.syncId &&
             !await checkpointSample(cache, id, kind, beforeId, sample)) return false;
+        retrySnapshot = structuredClone(sample);
         const remotelyConfirmed = verifiedByClientId.get(sample.syncId);
         if (remotelyConfirmed){
           const localPayload = prepareSamplePayload(sample, kind).payload;
@@ -827,15 +855,18 @@ export function createStorage({
         sample.verifiedUserId = id;
         if (!await checkpointSample(cache, id, kind, beforeConfirmation, sample)) return false;
       } catch (error){
-        if (error instanceof SampleConflictError){
-          blocked++;
-          sampleErrors.push(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}`);
-          continue;
+        // An individual failure is not an instruction to abandon other captures.
+        for (const key of Object.keys(sample)){
+          if (!(key in retrySnapshot)) delete sample[key];
         }
-        throw new Error(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}`, { cause: error });
+        Object.assign(sample, retrySnapshot);
+        sample.syncStatus = "pending";
+        blocked++;
+        if (syncIssues.length < 25){
+          syncIssues.push(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}${errorDetails(error)}. ${errorCategory(error)}`);
+        }
       }
     }
-    if (sampleErrors.length) setSyncIssues?.([...issues, ...sampleErrors]);
     if (cache.settingsPending){
       const latest = await readCache(id);
       if (latest?.revision !== cache.revision) return false;
@@ -847,7 +878,8 @@ export function createStorage({
         throw new Error(`No se pudieron guardar las preferencias en Supabase: ${error.message}`);
       }
     }
-    return { blocked, invalidReferences: remote.invalidReferences.length, sampleErrors };
+    reportRemoteIssues(remote, cache, id, syncIssues);
+    return { blocked, deferredDeletes, invalidReferences: remote.invalidReferences.length, syncIssues };
   }
 
   function pendingStatus(cache){
@@ -895,7 +927,8 @@ export function createStorage({
       let preferencesSynced = false;
       let lastSyncedUserId = null;
       let unresolvedReferences = 0;
-      let sampleErrors = [];
+      let unresolvedOperations = 0;
+      let lastSyncIssues = [];
       let lastPendingStatus = "";
       let passes = 0;
       do {
@@ -932,8 +965,8 @@ export function createStorage({
             if (remaining !== completed.blocked){
               throw new Error("Quedan muestras sin confirmar; se conserva la cola local.");
             }
-            cache.pending = remaining > 0;
-            cache.pendingDeletes = [];
+            cache.pendingDeletes = completed.deferredDeletes;
+            cache.pending = remaining > 0 || cache.pendingDeletes.length > 0;
             cache.settingsPending = false;
             cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
             await storeCache(cache, id);
@@ -946,7 +979,8 @@ export function createStorage({
           preferencesSynced ||= hadPendingSettings;
           lastSyncedUserId = id;
           unresolvedReferences = completed.invalidReferences;
-          sampleErrors = completed.sampleErrors;
+          unresolvedOperations = completed.blocked + completed.deferredDeletes.length;
+          lastSyncIssues = completed.syncIssues;
           lastPendingStatus = pendingStatus(cache);
         } catch (error){
           succeeded = false;
@@ -963,13 +997,10 @@ export function createStorage({
         }
       } while (syncRequested);
       if (succeeded && userId && userId === lastSyncedUserId){
-        if (sampleErrors.length){
-          succeeded = false;
-          setSyncStatus(`Error de sincronización: ${sampleErrors[0]}. ${lastPendingStatus} Consulta los detalles; las demás capturas válidas se conservaron.`, "error");
-        } else if (unresolvedReferences){
+        if (unresolvedReferences || unresolvedOperations){
           succeeded = false;
           setSyncStatus(
-            `Biblioteca parcialmente disponible; ${unresolvedReferences} referencia(s) remota(s) no disponibles o inválidas. ${lastPendingStatus} Consulta los detalles; no se reparó ni borró ningún archivo.`,
+            `Biblioteca parcialmente disponible; ${unresolvedReferences} referencia(s) remota(s) no disponibles o inválidas; ${unresolvedOperations} operación(es) aún pendientes. ${lastPendingStatus}. ${lastSyncIssues[0] || ""} Consulta los detalles; las capturas se conservaron.`,
             "error"
           );
         } else {
