@@ -914,11 +914,11 @@ test("162 captures retain verified progress after a network failure and recover 
   assert.equal(await harness.storage.saveAll(), false);
   let cache = harness.indexedDB.records.get("account-a");
   assert.equal(cache.samples.length, 163);
-  assert.equal(cache.samples.filter(sample => sample.syncStatus === "saved").length, 20);
-  assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 143);
-  assert.equal(harness.database.sign_samples.length, 20);
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "saved").length, 162);
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 1);
+  assert.equal(harness.database.sign_samples.length, 162);
   assert.equal(recognitionFor(harness.state).classify(vector(0.1))?.label, "Carga");
-  assert.match(harness.statuses.at(-1).text, /Muestra 20 de 162.*Inserción de muestra.*Network request failed.*143 muestra/);
+  assert.match(harness.issues.at(-1).join(" "), /Muestra 20 de 162.*Inserción de muestra.*Network request failed/);
 
   const reloaded = makeHarness({ database: harness.database, indexedDB: harness.indexedDB });
   await reloaded.storage.loadUserLibrary("account-a");
@@ -940,9 +940,9 @@ test("a lost insertion response is reconciled by persisted content on retry", as
   harness.database.loseInsertResponseAt = 20;
 
   assert.equal(await harness.storage.saveAll(), false);
-  assert.equal(harness.database.sign_samples.length, 21);
+  assert.equal(harness.database.sign_samples.length, 163);
   assert.equal(harness.indexedDB.records.get("account-a").samples.filter(
-    sample => sample.syncStatus === "pending").length, 143);
+    sample => sample.syncStatus === "pending").length, 1);
   assert.equal(await harness.storage.retrySync(), true);
   assert.equal(harness.database.sign_samples.length, 163);
   assert.equal(new Set(harness.database.sign_samples.map(row => row.client_id)).size, 163);
@@ -1027,4 +1027,43 @@ test("a capture not yet queued while an upload finishes is not discarded", async
   assert.equal(harness.state.samples[2].syncStatus, "pending");
   assert.equal(await harness.storage.saveAll(), true);
   assert.deepEqual(harness.indexedDB.records.get("account-a").samples.map(sample => sample.l), ["A", "B", "C"]);
+});
+
+
+test("missing object during a queued deletion cannot hide verified references or block uploads", async () => {
+  const database = incidentDatabase();
+  const indexedDB = new MemoryIndexedDB();
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: true,
+    samples: [staticSample("Nueva", 0.1)], motions: [],
+    pendingDeletes: [{ name: "Saludos", kind: "motion", clientIds: ["missing-0"] }]
+  });
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.equal(await harness.storage.retrySync(), false);
+  const cache = indexedDB.records.get("account-a");
+  assert.equal(cache.samples[0].syncStatus, "saved");
+  assert.equal(cache.pending, true);
+  assert.equal(cache.pendingDeletes.length, 1);
+  assert.equal(database.signs.some(sign => sign.name === "Saludos"), true);
+  assert.equal(database.storageRemoveCalls, 0);
+  assert.equal(database.sign_samples.length, 191);
+  assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+  assert.match(harness.issues.at(-1).join(" "), /Eliminación en espera/);
+});
+
+test("a failed sample upload does not block other captures and remains available for retry", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(...Array.from({ length: 4 }, (_, i) => staticSample("Carga", 0.1 + i * 0.01)));
+  harness.database.failSampleInsertAt = 2;
+  assert.equal(await harness.storage.saveAll(), false);
+  let cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 1);
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "saved").length, 4);
+  assert.equal(harness.database.sign_samples.length, 4);
+  assert.equal(await harness.storage.retrySync(), true);
+  cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 0);
+  assert.equal(harness.database.sign_samples.length, 5);
 });
