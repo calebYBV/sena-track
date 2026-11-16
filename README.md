@@ -324,6 +324,20 @@ sobrescribe automáticamente ningún objeto. Conserva la caché y consulta los
 detalles antes de solicitar una recuperación manual autorizada. Un fallo de
 descarga también puede deberse a red o permisos, no necesariamente a ausencia.
 
+**Reintentar** sincroniza capturas y preferencias, pero nunca ejecuta las
+eliminaciones pendientes. Para ellas existe **Revisar eliminaciones**, con un
+resumen y una confirmación independiente. La operación solo elimina los
+registros de muestra identificados y deja intactos las señas y los objetos de
+Storage; estos últimos pueden quedar huérfanos y requieren revisión manual.
+Si no se puede verificar un registro, o una operación se interrumpe, la cola
+se conserva: algunos registros podrían haberse eliminado antes del error, por
+lo que hay que revisar Supabase antes de confirmar de nuevo. No se debe ejecutar
+esta acción para recuperar capturas pendientes.
+El botón de borrado de la biblioteca retira las capturas locales al confirmarlo;
+crea antes un respaldo privado si quieres conservarlas. El respaldo solo cubre
+lo que todavía está presente en IndexedDB, no reconstruye capturas borradas
+antes de crearlo.
+
 ### Respaldo privado de la cola
 
 En Ajustes, **Crear respaldo local privado** descarga la copia IndexedDB de la cuenta

@@ -110,6 +110,33 @@ function comparable(sample, ignoreId = false){
   return encodeSnapshot(content);
 }
 
+export function mergeLocalCaptures(cache, current){
+  const result = {};
+  for (const key of ["samples", "motions"]){
+    const merged = [...cache[key]];
+    const matched = new Set();
+    for (const sample of current[key]){
+      const index = merged.findIndex((existing, i) => {
+        if (matched.has(i)) return false;
+        if (sample.verifiedUserId && existing.verifiedUserId &&
+            sample.verifiedUserId !== existing.verifiedUserId) return false;
+        if (sample.syncId && existing.syncId && sample.syncId !== existing.syncId) return false;
+        if (sample.captureId && existing.captureId && sample.captureId !== existing.captureId) return false;
+        return comparable(existing, !sample.syncId || !existing.syncId) ===
+          comparable(sample, !sample.syncId || !existing.syncId);
+      });
+      if (index >= 0) matched.add(index);
+      else {
+        const added = structuredClone(sample);
+        merged.push(added);
+        matched.add(merged.length - 1);
+      }
+    }
+    result[key] = merged;
+  }
+  return result;
+}
+
 export function mergeBackupCaptures(cache, backup, { onAdd = sample => sample } = {}){
   const result = { samples: [...cache.samples], motions: [...cache.motions] };
   let added = 0;
@@ -132,7 +159,9 @@ export function mergeBackupCaptures(cache, backup, { onAdd = sample => sample } 
         anonymous && !matchedAnonymous.has(existing) &&
           comparable(existing, true) === comparable(sample, true));
       if (match){
-        if (comparable(match, anonymous) !== comparable(sample, anonymous)){
+        if (sample.verifiedUserId && match.verifiedUserId &&
+              sample.verifiedUserId !== match.verifiedUserId ||
+            comparable(match, anonymous) !== comparable(sample, anonymous)){
           throw new Error("Una captura del respaldo tiene el mismo identificador que otra con contenido diferente; no se modificó la cola.");
         }
         if (anonymous) matchedAnonymous.add(match);

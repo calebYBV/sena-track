@@ -81,6 +81,8 @@
     <div class="header-account">
       <p id="syncStatus" class="sync-status" role="status" aria-live="polite">Sincronización pendiente de configuración.</p>
       <button id="syncRetry" class="btn line sync-retry" type="button" hidden>Reintentar</button>
+      <button id="syncDeletes" class="btn line sync-retry" type="button">Revisar eliminaciones…</button>
+      <p id="syncDeletesStatus" class="sync-status" role="status" aria-live="polite"></p>
       <details id="syncIssues" hidden>
         <summary>Detalles de referencias que requieren revisión</summary>
         <p id="syncIssuesText" style="white-space: pre-wrap; overflow-wrap: anywhere"></p>
@@ -192,6 +194,7 @@
       </div>
       <input type="file" id="file" accept="application/json" hidden>
       <input type="file" id="backupFile" accept="application/json" hidden>
+      <p id="backupSummary" class="hint" role="status" aria-live="polite"></p>
     </section>
     <section class="card white settings-card" id="accessibilitySettings" aria-labelledby="accessibilitySettingsTitle">
       <h2 id="accessibilitySettingsTitle"><span class="card-icon" aria-hidden="true">♫</span> D. Voz y accesibilidad</h2>

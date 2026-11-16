@@ -245,6 +245,7 @@ function renderList(){
     b.textContent = "Borrar";
     b.setAttribute("aria-label", `Borrar seña ${label}`);
     b.onclick = () => {
+      if (!confirm(`Se retirarán las capturas locales de «${label}», incluidas las pendientes. Crea antes un respaldo privado. Las eliminaciones remotas requerirán una confirmación separada. ¿Continuar?`)) return;
       void deleteSign(label, "all").catch(error => {
         console.error("No se pudo eliminar la seña.", error);
         setSyncStatus(`No se pudo preparar la eliminación: ${error.message}`, "error");

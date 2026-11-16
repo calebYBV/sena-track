@@ -7,14 +7,15 @@ import {
   validateSample
 } from "./sampleFormat.js";
 import { isSampleRecognizable, restoreCachedSample } from "./sampleSync.js";
-import { createSampleBackup, mergeBackupCaptures, readSampleBackup } from "./sampleBackup.js";
+import { createSampleBackup, mergeBackupCaptures, mergeLocalCaptures, readSampleBackup } from "./sampleBackup.js";
 import { getSupabaseClient } from "./supabaseClient.js";
 
 class SampleConflictError extends Error {}
 
 export function createStorage({
   state, dom, ui,
-  getSupabaseClientImpl = getSupabaseClient
+  getSupabaseClientImpl = getSupabaseClient,
+  confirmImpl = message => confirm(message)
 }){
   const { $, listEl } = dom;
   const { setNote, renderList, setSyncStatus, setSyncIssues } = ui;
@@ -27,6 +28,7 @@ export function createStorage({
   let userId = null;
   let lastLocalLibrary = null;
   let syncPromise = null;
+  let deletePromise = null;
   let syncRequested = false;
   let userLoadToken = 0;
   let cacheDatabasePromise = null;
@@ -366,14 +368,25 @@ export function createStorage({
     return details;
   }
 
-  // Verify stored content before releasing a pending local capture for recognition.
+  function remoteMatchesLocal(local, kind, id, verified, record, sign, payload){
+    return (!local.verifiedUserId || local.verifiedUserId === id) &&
+      verified.kind === kind && verified.l === local.l &&
+      sign?.sign_language === (local.signLanguage || "LSC") &&
+      (!local.components || canonicalJson(local.components) === canonicalJson(record.required_components)) &&
+      (!Number.isInteger(local.captureMeta?.handCount) || local.captureMeta.handCount === record.hand_count) &&
+      (typeof local.captureMeta?.faceAvailable !== "boolean" ||
+        local.captureMeta.faceAvailable === record.face_available) &&
+      canonicalJson(payload) === canonicalJson(prepareSamplePayload(local, kind).payload);
+  }
+
   function mergeRemoteIntoState(remote, cache){
     const deleted = cache?.pendingDeletes || [];
     for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
       const byId = new Map(state[key].map((sample, i) => [sample.syncId, i]));
       const updated = [...state[key]];
       for (const verified of remote[key]){
-        if (deleted.some(item => item.kind === kind && item.name === verified.l)) continue;
+        if (deleted.some(item => item.kind === kind && item.name === verified.l &&
+            (!item.clientIds?.length || item.clientIds.includes(verified.syncId)))) continue;
         const index = byId.get(verified.syncId);
         if (index === undefined){
           byId.set(verified.syncId, updated.length);
@@ -384,8 +397,10 @@ export function createStorage({
         if (local.syncStatus !== "pending" || local.l !== verified.l) continue;
         try {
           const actual = remote.persistedPayloads.get(verified.syncId);
-          if (actual && canonicalJson(prepareSamplePayload(local, kind).payload) === canonicalJson(actual)){
-            updated[index] = verified;
+          const record = remote.records.find(item => item.client_id === verified.syncId);
+          const sign = record && remote.signs.find(item => item.id === record.sign_id);
+          if (actual && record && remoteMatchesLocal(local, kind, cache.userId, verified, record, sign, actual)){
+            updated[index] = { ...local, syncStatus: "saved", verifiedUserId: cache.userId };
           }
         } catch {
           // Keep the original local sample when the identity cannot be verified.
@@ -567,62 +582,35 @@ export function createStorage({
     return data.id;
   }
 
-  async function deleteRemoteSign(client, id, name, kind, clientIds = []){
+  async function deleteRemoteSign(client, id, name, kind, clientIds = [], checkCurrent = () => {}){
+    if (!clientIds.length || clientIds.some(clientId =>
+      typeof clientId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientId))){
+      throw new Error("La eliminación no tiene identificadores válidos; requiere revisión manual.");
+    }
     const { data: signs, error: signError } = await client.from("signs")
       .select("id").eq("owner_id", id).eq("name", name).eq("kind", kind);
     if (signError) throw signError;
-    if (!signs.length){
-      const storage = client.storage.from(BUCKET);
-      const orphanPaths = [];
-      for (const clientId of clientIds){
-        const path = `${id}/${clientId}.json`;
-        const { data: listed, error } = await storage.list(id, { search: `${clientId}.json`, limit: 10 });
-        if (error) throw error;
-        if (listed.some(item => item.name === `${clientId}.json`)) orphanPaths.push(path);
+    const signIds = new Set(signs.map(sign => sign.id));
+    const records = [];
+    for (const clientId of new Set(clientIds)){
+      const { data, error } = await client.from("sign_samples")
+        .select("id,owner_id,sign_id,client_id")
+        .eq("owner_id", id).eq("client_id", clientId).maybeSingle();
+      if (error) throw error;
+      if (!data || data.owner_id !== id || data.client_id !== clientId || !signIds.has(data.sign_id)){
+        throw new Error("No se pudo verificar una captura de la eliminación; se conservó la cola para revisión manual.");
       }
-      if (orphanPaths.length){
-        const { error } = await storage.remove(orphanPaths);
-        if (error) throw error;
-      }
-      return;
+      records.push(data);
     }
-    for (const sign of signs){
-      const { data: records, error: recordsError } = await client.from("sign_samples")
-        .select("client_id,storage_path").eq("sign_id", sign.id).not("storage_path", "is", null);
-      if (recordsError) throw recordsError;
-      const paths = new Set(records.map(record => record.storage_path));
-      for (const removed of clientIds){
-        const path = `${id}/${removed}.json`;
-        if (paths.has(path)) continue;
-        const { data: listed, error } = await client.storage.from(BUCKET)
-          .list(id, { search: `${removed}.json`, limit: 10 });
-        if (error) throw error;
-        if (listed.some(item => item.name === `${removed}.json`)) paths.add(path);
-      }
-      const restore = [];
-      for (const path of paths){
-        const { data, error } = await client.storage.from(BUCKET).download(path);
-        if (error) throw error;
-        restore.push({ path, blob: data });
-      }
-      if (restore.length){
-        const { error } = await client.storage.from(BUCKET).remove(restore.map(file => file.path));
-        if (error) throw error;
-      }
-      const { error: deleteError } = await client.from("signs").delete()
-        .eq("id", sign.id).eq("owner_id", id);
-      if (deleteError){
-        const rollbackErrors = [];
-        for (const file of restore){
-          const { error } = await client.storage.from(BUCKET).upload(file.path, file.blob, {
-            contentType: "application/json"
-          });
-          if (error) rollbackErrors.push(error.message);
-        }
-        if (rollbackErrors.length){
-          throw new Error(`No se pudo borrar la seña (${deleteError.message}) ni restaurar los archivos: ${rollbackErrors.join("; ")}`);
-        }
-        throw deleteError;
+    for (const record of records){
+      if (userId !== id) throw new Error("La cuenta cambió durante la eliminación.");
+      checkCurrent();
+      const { data, error } = await client.from("sign_samples").delete()
+        .eq("id", record.id).eq("owner_id", id).eq("sign_id", record.sign_id)
+        .eq("client_id", record.client_id).select("id");
+      if (error) throw error;
+      if (!Array.isArray(data) || data.length !== 1){
+        throw new Error("No se pudo confirmar la eliminación de una captura; se conservó la cola para revisión manual.");
       }
     }
   }
@@ -765,15 +753,9 @@ export function createStorage({
     mergeRemoteIntoState(remote, latest);
     reportRemoteIssues(remote, latest, id);
     renderList();
-    const deferredDeletes = [];
     const syncIssues = [];
-    for (const removed of cache.pendingDeletes || []){
-      try {
-        await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds);
-      } catch (error){
-        deferredDeletes.push(removed);
-        syncIssues.push(`Eliminación en espera de «${removed.name}» (${removed.kind}): ${error.message}`);
-      }
+    if (cache.pendingDeletes?.length){
+      syncIssues.push("Hay eliminaciones pendientes. Para revisarlas y confirmarlas usa «Revisar eliminaciones»; Reintentar no las ejecuta.");
     }
     const verifiedByClientId = new Map(
       [...remote.samples, ...remote.motions].map(sample => [sample.syncId, sample])
@@ -811,19 +793,15 @@ export function createStorage({
         if (beforeId.syncId !== sample.syncId &&
             !await checkpointSample(cache, id, kind, beforeId, sample)) return false;
         retrySnapshot = structuredClone(sample);
+        if ((cache.pendingDeletes || []).some(item => item.clientIds?.includes(sample.syncId))){
+          throw new SampleConflictError("Esta captura también figura en una eliminación pendiente; se conserva hasta que se revise el conflicto.");
+        }
         const remotelyConfirmed = verifiedByClientId.get(sample.syncId);
         if (remotelyConfirmed){
-          const localPayload = prepareSamplePayload(sample, kind).payload;
           const record = recordByClientId.get(sample.syncId);
           const remoteSign = signCache.find(sign => sign.id === record.sign_id);
-          if (remotelyConfirmed.kind !== kind || remotelyConfirmed.l !== sample.l ||
-              remoteSign?.sign_language !== (sample.signLanguage || "LSC") ||
-              sample.components && canonicalJson(sample.components) !== canonicalJson(record.required_components) ||
-              Number.isInteger(sample.captureMeta?.handCount) &&
-                sample.captureMeta.handCount !== record.hand_count ||
-              typeof sample.captureMeta?.faceAvailable === "boolean" &&
-                sample.captureMeta.faceAvailable !== record.face_available ||
-              canonicalJson(remote.persistedPayloads.get(sample.syncId)) !== canonicalJson(localPayload)){
+          if (!remoteMatchesLocal(sample, kind, id, remotelyConfirmed, record, remoteSign,
+            remote.persistedPayloads.get(sample.syncId))){
             throw new SampleConflictError(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la copia local; se conservaron ambos datos.`);
           }
         } else {
@@ -879,14 +857,15 @@ export function createStorage({
       }
     }
     reportRemoteIssues(remote, cache, id, syncIssues);
-    return { blocked, deferredDeletes, invalidReferences: remote.invalidReferences.length, syncIssues };
+    return { blocked, invalidReferences: remote.invalidReferences.length, syncIssues };
   }
 
   function pendingStatus(cache){
     const samples = [...(cache.samples || []), ...(cache.motions || [])];
     const pendingSamples = samples.filter(sample => sample.syncStatus === "pending").length;
     const preferences = cache.settingsPending ? "preferencias pendientes" : "";
-    const deletions = cache.pendingDeletes?.length ? "eliminaciones pendientes" : "";
+    const deletions = cache.pendingDeletes?.length
+      ? `${cache.pendingDeletes.length} eliminación(es) pendientes de confirmación separada` : "";
     const details = [
       pendingSamples ? `${pendingSamples} muestra(s) pendiente(s) de subida` : "",
       preferences,
@@ -918,6 +897,10 @@ export function createStorage({
   }
 
   async function flushPending(){
+    if (deletePromise){
+      setSyncStatus("Espera a que termine la revisión de eliminaciones antes de sincronizar.", "pending");
+      return false;
+    }
     if (syncPromise){
       syncRequested = true;
       return syncPromise;
@@ -965,8 +948,7 @@ export function createStorage({
             if (remaining !== completed.blocked){
               throw new Error("Quedan muestras sin confirmar; se conserva la cola local.");
             }
-            cache.pendingDeletes = completed.deferredDeletes;
-            cache.pending = remaining > 0 || cache.pendingDeletes.length > 0;
+            cache.pending = remaining > 0 || Boolean(cache.pendingDeletes?.length);
             cache.settingsPending = false;
             cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
             await storeCache(cache, id);
@@ -979,7 +961,7 @@ export function createStorage({
           preferencesSynced ||= hadPendingSettings;
           lastSyncedUserId = id;
           unresolvedReferences = completed.invalidReferences;
-          unresolvedOperations = completed.blocked + completed.deferredDeletes.length;
+          unresolvedOperations = completed.blocked + (cache.pendingDeletes?.length || 0);
           lastSyncIssues = completed.syncIssues;
           lastPendingStatus = pendingStatus(cache);
         } catch (error){
@@ -1018,8 +1000,19 @@ export function createStorage({
     if (!userId) return false;
     try {
       await updatePendingCache(cache => {
-        cache.samples = state.samples;
-        cache.motions = state.motions;
+        for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
+          for (const sample of state[key]){
+            if ((cache.pendingDeletes || []).some(item => item.kind === kind &&
+                (item.clientIds?.length ? item.clientIds.includes(sample.syncId) : item.name === sample.l))){
+              throw new Error("Una captura local coincide con una eliminación pendiente; conserva la sesión y revisa la cola antes de guardar.");
+            }
+          }
+        }
+        const merged = mergeLocalCaptures(cache, {
+          samples: state.samples, motions: state.motions
+        });
+        cache.samples = merged.samples;
+        cache.motions = merged.motions;
         cache.filters = state.filterConfig;
         cache.ambiguity = state.ambiguityConfig;
         cache.settings = readSettings();
@@ -1070,6 +1063,72 @@ export function createStorage({
     }
   }
 
+  async function reviewPendingDeletes(){
+    const id = userId;
+    $("syncDeletesStatus").textContent = "";
+    if (!id) throw new Error("Inicia sesión para revisar las eliminaciones.");
+    if (syncPromise || deletePromise) throw new Error("Espera a que termine la operación en curso.");
+    const cache = await readCache(id);
+    if (userId !== id) throw new Error("La cuenta cambió durante la revisión.");
+    const queued = structuredClone(cache?.pendingDeletes || []);
+    if (!queued.length){
+      $("syncDeletesStatus").textContent = "No hay eliminaciones pendientes.";
+      return false;
+    }
+    const summary = queued.map(item =>
+      `• ${item.name} (${item.kind}): ${item.clientIds?.length || 0} captura(s)`).join("\n");
+    if (!confirmImpl(`Se eliminarán únicamente los registros remotos identificados abajo. Esta acción es irreversible; los objetos de Storage se conservarán. El reintento general no ejecuta estas eliminaciones.\n\n${summary}\n\n¿Confirmas estas eliminaciones?`)){
+      return false;
+    }
+    if (userId !== id || syncPromise || deletePromise){
+      throw new Error("La cuenta o la sincronización cambió; revisa de nuevo las eliminaciones.");
+    }
+    deletePromise = withCacheWrite(async () => {
+      let latest = await readCache(id);
+      if (userId !== id || !latest || latest.revision !== cache.revision ||
+          canonicalJson(latest.pendingDeletes || []) !== canonicalJson(queued)){
+        throw new Error("La cola cambió; revisa de nuevo las eliminaciones.");
+      }
+      const client = await getSupabaseClientImpl();
+      for (const removed of queued){
+        const checkCurrent = () => {
+          if (userId !== id) throw new Error("La cuenta cambió durante la eliminación.");
+          const ids = new Set(removed.clientIds || []);
+          if ([...latest.samples, ...latest.motions, ...state.samples, ...state.motions]
+            .some(sample => ids.has(sample.syncId))){
+            throw new Error("Una captura local usa un identificador de esta eliminación; no se procesará.");
+          }
+        };
+        checkCurrent();
+        await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds, checkCurrent);
+        checkCurrent();
+        const index = latest.pendingDeletes.findIndex(item =>
+          canonicalJson(item) === canonicalJson(removed));
+        if (index < 0) throw new Error("La cola cambió durante la eliminación.");
+        latest.pendingDeletes.splice(index, 1);
+        latest.pending = Boolean(latest.pendingDeletes.length || latest.settingsPending ||
+          [...latest.samples, ...latest.motions].some(sample => sample.syncStatus === "pending"));
+        latest.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
+        await storeCache(latest, id);
+      }
+      return latest;
+    }).finally(() => { deletePromise = null; });
+    try {
+      const result = await deletePromise;
+      if (userId === id){
+        setSyncStatus(result.pending ? pendingStatus(result) :
+          "Eliminaciones confirmadas; los archivos de Storage se conservaron.", result.pending ? "pending" : "saved");
+      }
+      return true;
+    } catch (error){
+      if (userId === id) setSyncStatus(
+        `No se completaron las eliminaciones: ${error.message}${errorDetails(error)}. Algunos registros podrían haberse eliminado; revisa Supabase antes de volver a confirmar. Los archivos de Storage se conservaron.`,
+        "error"
+      );
+      return false;
+    }
+  }
+
   async function deleteSign(name, kind){
     const kinds = kind === "all" ? ["s", "m"] : [kind];
     const removedByKind = new Map([
@@ -1081,15 +1140,19 @@ export function createStorage({
         sampleKind, await Promise.all(examples.map(ensureSampleId))
       ])
     ));
-    const nextSamples = kinds.includes("s")
-      ? state.samples.filter(sample => sample.l !== name) : state.samples;
-    const nextMotions = kinds.includes("m")
-      ? state.motions.filter(sample => sample.l !== name) : state.motions;
     let cache;
     try {
       cache = await updatePendingCache(cache => {
-        cache.samples = nextSamples;
-        cache.motions = nextMotions;
+        const merged = mergeLocalCaptures(cache, { samples: state.samples, motions: state.motions });
+        for (const [key, sampleKind] of [["samples", "s"], ["motions", "m"]]){
+          if (kinds.includes(sampleKind) &&
+              merged[key].filter(sample => sample.l === name).length !==
+              state[key].filter(sample => sample.l === name).length){
+            throw new Error("La copia local contiene capturas adicionales para esta seña; no se retiró ninguna. Revisa las otras pestañas.");
+          }
+        }
+        cache.samples = kinds.includes("s") ? merged.samples.filter(sample => sample.l !== name) : merged.samples;
+        cache.motions = kinds.includes("m") ? merged.motions.filter(sample => sample.l !== name) : merged.motions;
         cache.pendingDeletes ||= [];
         for (const [sampleKind, clientIds] of clientIdsByKind){
           if (!clientIds.length) continue;
@@ -1197,6 +1260,10 @@ export function createStorage({
   });
 
   $("syncRetry").addEventListener("click", () => { void retrySync(); });
+  $("syncDeletes").addEventListener("click", () => {
+    void reviewPendingDeletes().catch(error =>
+      setSyncStatus(`No se pudieron revisar las eliminaciones: ${error.message}`, "error"));
+  });
 
   async function exportBackup(){
     const id = userId;
@@ -1257,6 +1324,7 @@ export function createStorage({
   }
 
   $("btnBackup").onclick = async () => {
+    $("backupSummary").textContent = "";
     try {
       const backup = await exportBackup();
       const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
@@ -1265,9 +1333,11 @@ export function createStorage({
       anchor.href = url;
       anchor.download = "sena-track-respaldo-privado.json";
       anchor.click();
-      URL.revokeObjectURL(url);
-      setNote(`Respaldo local creado (solo IndexedDB, no incluye datos exclusivamente remotos). Estados: ${Object.entries(backup.counts)
-        .map(([status, count]) => `${status}: ${count}`).join(" · ") || "sin capturas"}.`);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const standard = ["saved", "local", "pending", "invalid", "unverified"];
+      const statuses = [...standard, ...Object.keys(backup.counts).filter(status => !standard.includes(status))];
+      $("backupSummary").textContent = `Respaldo local (solo IndexedDB). Estados: ${statuses
+        .map(status => `${status}: ${backup.counts[status] || 0}`).join(" · ")}. Verifica que se haya descargado el archivo privado.`;
     } catch (error){
       setSyncStatus(`No se pudo crear el respaldo: ${error.message}`, "error");
     }
@@ -1283,7 +1353,7 @@ export function createStorage({
       await readSampleBackup(backup, userId);
       if (!confirm("El respaldo contiene datos privados. Se añadirán únicamente capturas ausentes de esta misma cuenta, sin sobrescribir las existentes. Las pendientes podrán sincronizarse después. ¿Continuar?")) return;
       const added = await restoreBackup(backup);
-      setNote(`Respaldo comprobado: ${added} captura(s) restaurada(s). Revisa la cola antes de reintentar.`);
+      $("backupSummary").textContent = `Respaldo comprobado: ${added} captura(s) restaurada(s). Revisa la cola antes de reintentar.`;
     } catch (error){
       setSyncStatus(`No se pudo restaurar el respaldo: ${error.message}`, "error");
     } finally {
@@ -1325,7 +1395,7 @@ export function createStorage({
     }
   };
   $("btnReset").onclick = async () => {
-    if (!confirm("¿Borrar todas las señas de esta cuenta? Esta acción se sincroniza con Supabase.")) return;
+    if (!confirm("Se retirarán todas las capturas locales, incluidas las pendientes. Crea antes un respaldo privado. Las eliminaciones remotas requerirán una confirmación separada. ¿Continuar?")) return;
     try {
       const names = new Map();
       for (const sample of state.samples){
@@ -1341,6 +1411,10 @@ export function createStorage({
         names.set(key, group);
       }
       await updatePendingCache(cache => {
+        const merged = mergeLocalCaptures(cache, { samples: state.samples, motions: state.motions });
+        if (merged.samples.length !== state.samples.length || merged.motions.length !== state.motions.length){
+          throw new Error("La copia local contiene capturas adicionales; no se retiró ninguna. Revisa las otras pestañas.");
+        }
         cache.samples = [];
         cache.motions = [];
         cache.pendingDeletes = [...(cache.pendingDeletes || []), ...[...names.values()].map(({ name, kind, clientIds }) => ({
@@ -1368,11 +1442,14 @@ export function createStorage({
     importLocalLibrary,
     exportBackup,
     restoreBackup,
+    reviewPendingDeletes,
     retrySync,
     clearUser(){
       userId = null;
       syncRequested = false;
       userLoadToken++;
+      $("backupSummary").textContent = "";
+      $("syncDeletesStatus").textContent = "";
       setSyncIssues?.([]);
       state.samples = [];
       state.motions = [];

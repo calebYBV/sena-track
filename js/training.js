@@ -452,7 +452,9 @@ function finishMotion(){
     if (legacyPair){ sample.s = legacyPair.filtered; sample.r = legacyPair.raw; }
     state.motions.push(sample);
     recognition.prepareFilteredReferences(state.filterConfig);
-    void saveAll().then(saved => {
+    void saveAll().then(() => {
+      const saved = state.motions.some(item => item.captureId === sample.captureId &&
+        item.syncStatus === "saved" && item.verifiedUserId === state.userId);
       $("trainHint").textContent = saved
         ? `Listo: “${m.label}” guardada en Supabase. Graba unas 5 veces para mejorar la comparación.`
         : `“${m.label}” pendiente de sincronización; todavía no se usa para reconocer.`;
@@ -603,7 +605,10 @@ function finishUnifiedCapture(capture){
     state.samples.push(sample);
   }
   recognition.prepareFilteredReferences(state.filterConfig);
-  void saveAll().then(saved => {
+  void saveAll().then(() => {
+    const saved = [...state.samples, ...state.motions].some(item =>
+      item.captureId === sample.captureId && item.syncStatus === "saved" &&
+      item.verifiedUserId === state.userId);
     $("trainHint").textContent = saved
       ? `Listo: “${capture.label}” guardada en Supabase.`
       : `“${capture.label}” pendiente de sincronización; todavía no se usa para reconocer.`;
