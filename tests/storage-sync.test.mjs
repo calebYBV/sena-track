@@ -66,6 +66,12 @@ class MemoryIndexedDB {
             return request;
           },
           put: value => {
+            if (this.failNextPut){
+              this.failNextPut = false;
+              transaction.error = new Error("IndexedDB write failed");
+              queueMicrotask(() => transaction.onabort?.());
+              return;
+            }
             this.records.set(value.userId, structuredClone(value));
             this.onPut?.(structuredClone(value));
             queueMicrotask(() => transaction.oncomplete?.());
@@ -178,7 +184,13 @@ class Query {
     }
     if (action === "insert"){
       if (table === "sign_samples" && database.failSampleInsert){
-        return { data: null, error: new Error("Supabase sample insert failed") };
+        return { data: null, error: database.sampleInsertError || new Error("Supabase sample insert failed") };
+      }
+      if (table === "sign_samples"){
+        database.sampleInsertAttempts++;
+        if (database.sampleInsertAttempts === database.failSampleInsertAt){
+          return { data: null, error: new Error("Network request failed") };
+        }
       }
       const rows = Array.isArray(this.value) ? this.value : [this.value];
       if (table === "sign_samples" && rows.some(row =>
@@ -191,6 +203,10 @@ class Query {
         id: row.id || `${table}-${++database.nextId}`
       }));
       database[table].push(...inserted);
+      if (table === "sign_samples") database.afterSampleInsert?.();
+      if (table === "sign_samples" && database.sampleInsertAttempts === database.loseInsertResponseAt){
+        return { data: null, error: new Error("Network response lost") };
+      }
       return { data: inserted, error: null };
     }
     return { data: null, error: new Error(`Unsupported operation ${action} on ${table}`) };
@@ -221,6 +237,9 @@ function makeClient(database){
           return { error: null };
         },
         async upload(path, blob){
+          if (database.failStorageUpload){
+            return { error: new Error("Storage upload unavailable") };
+          }
           database.files.set(path, blob);
           return { error: null };
         }
@@ -240,7 +259,12 @@ function makeDatabase(){
     failSettingsRead: false,
     failSettingsWrite: false,
     failSampleInsert: false,
+    sampleInsertError: null,
+    sampleInsertAttempts: 0,
+    failSampleInsertAt: null,
+    loseInsertResponseAt: null,
     failSampleVerify: false,
+    failStorageUpload: false,
     beforeSampleInsert: null,
     storageRemoveCalls: 0
   };
@@ -332,7 +356,7 @@ test("a failed preference write and reload do not mark confirmed samples pending
   harness.state.filterConfig.tau = 0.08;
   assert.equal(await harness.storage.savePreferences(), false);
   assert.match(harness.statuses.at(-1).text, /preferencias en Supabase/);
-  assert.equal(harness.state.samples[0].syncStatus, "local");
+  assert.equal(harness.state.samples[0].syncStatus, "saved");
   assert.equal(harness.indexedDB.records.get("account-a").pending, true);
   assert.equal(harness.indexedDB.records.get("account-a").settingsPending, true);
   assert.equal(harness.indexedDB.records.get("account-a").samples[0].syncStatus, "saved");
@@ -398,7 +422,7 @@ test("new samples remain excluded after an upload error and are available after 
   harness.database.failSampleInsert = true;
 
   assert.equal(await harness.storage.saveAll(), false);
-  assert.equal(harness.state.samples[0].syncStatus, "local");
+  assert.equal(harness.state.samples[0].syncStatus, "saved");
   assert.equal(harness.state.samples[1].syncStatus, "pending");
   assert.equal(recognitionFor(harness.state).classify(vector(0.1))?.label, "A");
   assert.match(harness.statuses.at(-1).text, /Supabase sample insert failed/);
@@ -558,6 +582,12 @@ test("a retry reuses an existing valid Storage capture without overwriting it", 
     rh: { hands: {}, placement: null, face: Array(32).fill(0) },
     syncStatus: "pending"
   });
+  harness.database.failStorageUpload = true;
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.equal(harness.database.files.size, 0);
+  assert.match(harness.statuses.at(-1).text, /Subida a Storage: Storage upload unavailable/);
+
+  harness.database.failStorageUpload = false;
   harness.database.failSampleInsert = true;
   harness.database.failSampleVerify = true;
   assert.equal(await harness.storage.saveAll(), false);
@@ -589,7 +619,7 @@ test("concurrent preference and capture writes preserve the pending sign snapsho
   assert.equal(cached.pending, true);
   assert.equal(cached.samples.length, 2);
   assert.equal(cached.samples[1].l, "New Capture");
-  assert.equal(cached.samples[1].syncStatus, "pending");
+  assert.equal(cached.samples[1].syncStatus, "saved");
   assert.equal(cached.settingsPending, true);
 });
 
@@ -700,4 +730,129 @@ test("concurrent cache revisions preserve samples, preferences, and pending dele
   assert.deepEqual(latest.pendingDeletes, [
     { name: "Seña en cola", kind: "static", clientIds: ["keep-id"] }
   ]);
+});
+
+test("162 captures retain verified progress after a network failure and recover without duplicates", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(...Array.from({ length: 162 }, (_, i) =>
+    staticSample("Carga", 0.1 + i / 10000)));
+  harness.database.failSampleInsertAt = 20;
+
+  assert.equal(await harness.storage.saveAll(), false);
+  let cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.samples.length, 163);
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "saved").length, 20);
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 143);
+  assert.equal(harness.database.sign_samples.length, 20);
+  assert.equal(recognitionFor(harness.state).classify(vector(0.1))?.label, "Carga");
+  assert.match(harness.statuses.at(-1).text, /Muestra 20 de 162.*Inserción de muestra.*Network request failed.*143 muestra/);
+
+  const reloaded = makeHarness({ database: harness.database, indexedDB: harness.indexedDB });
+  await reloaded.storage.loadUserLibrary("account-a");
+  assert.equal(recognitionFor(reloaded.state).classify(vector(0.1))?.label, "Carga");
+  assert.equal(await reloaded.storage.retrySync(), true);
+  cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.samples.length, 163);
+  assert.ok(cache.samples.every(sample => sample.syncStatus === "saved" && sample.verifiedUserId === "account-a"));
+  assert.equal(harness.database.sign_samples.length, 163);
+  assert.equal(new Set(harness.database.sign_samples.map(row => row.client_id)).size, 163);
+  assert.equal(harness.database.storageRemoveCalls, 0);
+});
+
+test("a lost insertion response is reconciled by persisted content on retry", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(...Array.from({ length: 162 }, (_, i) =>
+    staticSample("Carga", 0.1 + i / 10000)));
+  harness.database.loseInsertResponseAt = 20;
+
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.equal(harness.database.sign_samples.length, 21);
+  assert.equal(harness.indexedDB.records.get("account-a").samples.filter(
+    sample => sample.syncStatus === "pending").length, 143);
+  assert.equal(await harness.storage.retrySync(), true);
+  assert.equal(harness.database.sign_samples.length, 163);
+  assert.equal(new Set(harness.database.sign_samples.map(row => row.client_id)).size, 163);
+});
+
+test("a matching identifier with different persisted content remains pending", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  const sample = staticSample("A", 0.7);
+  sample.syncId = "capture-a";
+  harness.state.samples.push(sample);
+
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+  assert.deepEqual(harness.indexedDB.records.get("account-a").samples[1].f, vector(0.7));
+  assert.deepEqual(harness.database.sign_samples[0].payload.f, vector(0));
+  assert.match(harness.statuses.at(-1).text, /no coincide con la copia local/);
+});
+
+test("reconciliation does not mask a different label stored inside the remote payload", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  harness.database.loseInsertResponseAt = 1;
+  assert.equal(await harness.storage.saveAll(), false);
+  const inserted = harness.database.sign_samples[1];
+  inserted.payload.l = "Otro contenido";
+
+  assert.equal(await harness.storage.retrySync(), false);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+  assert.equal(inserted.payload.l, "Otro contenido");
+  assert.match(harness.statuses.at(-1).text, /no coincide con la copia local/);
+});
+
+test("a failed IndexedDB checkpoint retains the capture and reconciles the remote insert", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  harness.database.afterSampleInsert = () => {
+    harness.indexedDB.failNextPut = true;
+    harness.database.afterSampleInsert = null;
+  };
+  assert.equal(await harness.storage.saveAll(), false);
+  const pending = harness.indexedDB.records.get("account-a").samples[1];
+  assert.equal(pending.syncStatus, "pending");
+  assert.ok(pending.syncId);
+  assert.equal(harness.database.sign_samples.length, 2);
+  assert.match(harness.statuses.at(-1).text, /IndexedDB write failed/);
+  assert.equal(await harness.storage.retrySync(), true);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "saved");
+  assert.equal(harness.database.sign_samples.length, 2);
+});
+
+test("permission errors report the failed operation and Supabase code without confirming the sample", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  harness.database.failSampleInsert = true;
+  harness.database.sampleInsertError = { message: "row-level security policy", code: "42501" };
+  assert.equal(await harness.storage.saveAll(), false);
+  assert.match(harness.statuses.at(-1).text, /Inserción de muestra.*row-level security policy.*código: 42501/);
+  assert.equal(harness.indexedDB.records.get("account-a").samples[1].syncStatus, "pending");
+  assert.equal(harness.database.sign_samples.length, 1);
+});
+
+test("a capture not yet queued while an upload finishes is not discarded", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  const entered = deferred();
+  const release = deferred();
+  harness.database.beforeSampleInsert = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const saving = harness.storage.saveAll();
+  await entered.promise;
+  harness.state.samples.push(staticSample("C", 0.2));
+  release.resolve();
+  assert.equal(await saving, true);
+  assert.deepEqual(harness.state.samples.map(sample => sample.l), ["A", "B", "C"]);
+  assert.equal(harness.state.samples[2].syncStatus, "pending");
+  assert.equal(await harness.storage.saveAll(), true);
+  assert.deepEqual(harness.indexedDB.records.get("account-a").samples.map(sample => sample.l), ["A", "B", "C"]);
 });
