@@ -214,7 +214,7 @@ function createRegionState(identity, track, timestamp, diagnosticReason = "acqui
 }
 
 function configSignature(config){
-  return ["model", "tau", "zeta", "omegaN"]
+  return ["model", "tau"]
     .map(key => `${key}:${config?.[key]}`).join("|");
 }
 

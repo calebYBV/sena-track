@@ -9,7 +9,14 @@ globalThis.crypto ||= webcrypto;
 const vector = value => Array(63).fill(value);
 
 function staticSample(label, value = 0, syncStatus = "pending"){
-  return { l: label, kind: "static", formatVersion: 1, f: vector(value), syncStatus };
+  return {
+    l: label, kind: "static", formatVersion: 1, f: vector(value),
+    filter: {
+      model: "first", tau: 0.06,
+      method: "explicit-euler-substeps-tau-quarter", version: 1
+    },
+    syncStatus
+  };
 }
 
 function remoteSign(ownerId, id, name){
@@ -24,7 +31,15 @@ function remoteSample(ownerId, signId, clientId, payload = staticSample("A", 0))
     id: `row-${clientId}`, owner_id: ownerId, sign_id: signId, client_id: clientId,
     format_version: 1, required_components: { left: true, right: false, face: false },
     hand_count: 1, face_available: false, mediapipe_model: "test-model",
-    processing: { source: "legacy" }, handedness: "Left",
+    processing: {
+      source: "legacy",
+      filter: {
+        model: "first",
+        tau: 0.06,
+        method: "explicit-euler-substeps-tau-quarter",
+        version: 1
+      }
+    }, handedness: "Left",
     coordinate_space: "mediapipe-normalized-image-v1", mirrored_display: true,
     image_width: 640, image_height: 480, captured_at: "2026-01-01T00:00:00Z",
     payload: { formatVersion: 1, f: payload.f || vector(0) }, storage_path: null
@@ -52,6 +67,7 @@ class MemoryIndexedDB {
           },
           put: value => {
             this.records.set(value.userId, structuredClone(value));
+            this.onPut?.(structuredClone(value));
             queueMicrotask(() => transaction.oncomplete?.());
           }
         };
@@ -123,6 +139,11 @@ class Query {
 
   run(){
     const { database, table, action } = this;
+    if (action === "insert" && table === "sign_samples" && database.beforeSampleInsert){
+      const beforeInsert = database.beforeSampleInsert;
+      database.beforeSampleInsert = null;
+      return Promise.resolve(beforeInsert()).then(() => this.run());
+    }
     if (action === "select"){
       if (table === "signs" && database.failSignRead){
         return { data: null, error: new Error("Supabase signs unavailable") };
@@ -220,6 +241,7 @@ function makeDatabase(){
     failSettingsWrite: false,
     failSampleInsert: false,
     failSampleVerify: false,
+    beforeSampleInsert: null,
     storageRemoveCalls: 0
   };
 }
@@ -244,9 +266,10 @@ function makeHarness({
     });
   }
   const state = {
+    userId: accountId,
     samples: initialSamples,
     motions: [],
-    filterConfig: { model: "first", tau: 0.06, zeta: 0.9, omegaN: 14, compareVisual: false },
+    filterConfig: { model: "first", tau: 0.06, compareVisual: false },
     ambiguityConfig: { absoluteMargin: 0.04, relativeMargin: 0.08 }
   };
   const statuses = [];
@@ -275,11 +298,31 @@ function recognitionFor(state){
   });
 }
 
+function deferred(){
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+}
+
 test("confirmed Supabase samples are restored as recognized references", async () => {
   const harness = makeHarness();
   await harness.storage.loadUserLibrary("account-a");
   assert.equal(harness.state.samples[0].syncStatus, "saved");
+  assert.equal(harness.state.samples[0].filter.model, "first");
   assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+});
+
+test("legacy remote references without compatible filter metadata are preserved but not recognized", async () => {
+  const database = makeDatabase();
+  delete database.sign_samples[0].processing.filter;
+  delete database.sign_samples[0].payload.filter;
+  const harness = makeHarness({ database });
+
+  await harness.storage.loadUserLibrary("account-a");
+
+  assert.equal(harness.state.samples.length, 1);
+  assert.equal(harness.state.samples[0].syncStatus, "saved");
+  assert.equal(recognitionFor(harness.state).classify(vector(0)), null);
 });
 
 test("a failed preference write and reload do not mark confirmed samples pending", async () => {
@@ -300,7 +343,7 @@ test("a failed preference write and reload do not mark confirmed samples pending
   });
   await reloaded.storage.loadUserLibrary("account-a");
   assert.equal(reloaded.state.samples[0].syncStatus, "local");
-  assert.equal(recognitionFor(reloaded.state).classify(vector(0))?.label, "A");
+  assert.equal(recognitionFor(reloaded.state).classify(vector(0)), null);
   assert.equal(await reloaded.storage.retrySync(), false);
 
   harness.database.failSettingsWrite = false;
@@ -317,6 +360,35 @@ test("a settings read error does not discard an otherwise valid remote library",
   assert.equal(harness.state.samples[0].syncStatus, "saved");
   assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
   assert.match(harness.statuses.at(-1).text, /no se pudieron cargar las preferencias/);
+});
+
+test("legacy second-order preferences migrate to first order without reusing old parameters", async () => {
+  const database = makeDatabase();
+  database.settings = {
+    user_id: "account-a",
+    filter_model: "second",
+    tau: 0.13,
+    zeta: 1.4,
+    omega_n: 22,
+    static_tolerance: 0.8,
+    motion_tolerance: 0.7,
+    capture_duration: 2,
+    speech_enabled: true,
+    show_raw_points: false
+  };
+  const harness = makeHarness({ database });
+
+  await harness.storage.loadUserLibrary("account-a");
+  assert.equal(harness.state.filterConfig.model, "first");
+  assert.equal(harness.state.filterConfig.tau, 0.13);
+  assert.equal("zeta" in harness.state.filterConfig, false);
+  assert.equal("omegaN" in harness.state.filterConfig, false);
+
+  assert.equal(await harness.storage.savePreferences(), true);
+  assert.equal(database.settings.filter_model, "first");
+  assert.equal(database.settings.tau, 0.13);
+  assert.equal("zeta" in database.settings, false);
+  assert.equal("omega_n" in database.settings, false);
 });
 
 test("new samples remain excluded after an upload error and are available after retry", async () => {
@@ -545,4 +617,87 @@ test("an in-flight sync cannot replace a capture queued at a newer revision", as
   assert.equal(harness.database.sign_samples.length, 3);
   assert.equal(new Set(harness.database.sign_samples.map(row => row.client_id)).size, 3);
   assert.equal(harness.database.storageRemoveCalls, 0);
+});
+test("preference updates during an upload preserve the capture and newest settings", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  const entered = deferred();
+  const release = deferred();
+  const queued = deferred();
+  harness.database.beforeSampleInsert = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  harness.indexedDB.onPut = cache => {
+    if (cache.settings?.tau === 0.08 && cache.samples.some(sample => sample.l === "B")){
+      queued.resolve();
+    }
+  };
+
+  const upload = harness.storage.saveAll();
+  await entered.promise;
+  harness.state.filterConfig.tau = 0.08;
+  const preferences = harness.storage.savePreferences();
+  await queued.promise;
+  release.resolve();
+
+  assert.deepEqual(await Promise.all([upload, preferences]), [true, true]);
+  const cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.settings.tau, 0.08);
+  assert.deepEqual(cache.samples.map(sample => sample.l), ["A", "B"]);
+  assert.ok(cache.samples.every(sample => sample.verifiedUserId === "account-a"));
+  assert.equal(harness.database.sign_samples.length, 2);
+});
+
+test("a capture made during synchronization is not replaced by an older snapshot", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("B", 0.1));
+  const entered = deferred();
+  const release = deferred();
+  harness.database.beforeSampleInsert = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+
+  const firstSave = harness.storage.saveAll();
+  await entered.promise;
+  harness.state.samples.push(staticSample("C", 0.2));
+  const secondSave = harness.storage.saveAll();
+  release.resolve();
+
+  assert.deepEqual(await Promise.all([firstSave, secondSave]), [true, true]);
+  const cache = harness.indexedDB.records.get("account-a");
+  assert.deepEqual(cache.samples.map(sample => sample.l).sort(), ["A", "B", "C"]);
+  assert.ok(cache.samples.every(sample => sample.verifiedUserId === "account-a"));
+  assert.equal(harness.database.sign_samples.length, 3);
+  assert.equal(harness.database.signs.filter(sign => sign.name === "B").length, 1);
+  assert.equal(harness.database.signs.filter(sign => sign.name === "C").length, 1);
+});
+
+test("concurrent cache revisions preserve samples, preferences, and pending deletions", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  const cache = harness.indexedDB.records.get("account-a");
+  cache.pending = true;
+  cache.pendingDeletes = [{ name: "Seña en cola", kind: "static", clientIds: ["keep-id"] }];
+  const startingRevision = cache.revision;
+  harness.database.failSignRead = true;
+  harness.state.samples.push(staticSample("B", 0.1));
+  harness.state.filterConfig.tau = 0.11;
+
+  const results = await Promise.all([
+    harness.storage.saveAll(),
+    harness.storage.savePreferences()
+  ]);
+  const latest = harness.indexedDB.records.get("account-a");
+
+  assert.deepEqual(results, [false, false]);
+  assert.ok(latest.revision >= startingRevision + 2);
+  assert.deepEqual(latest.samples.map(sample => sample.l), ["A", "B"]);
+  assert.equal(latest.settings.tau, 0.11);
+  assert.deepEqual(latest.pendingDeletes, [
+    { name: "Seña en cola", kind: "static", clientIds: ["keep-id"] }
+  ]);
 });

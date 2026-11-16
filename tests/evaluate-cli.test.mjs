@@ -88,7 +88,7 @@ test("evaluation CLI rejects missing and invalid kinds without emitting metrics"
   }
 });
 
-test("evaluation CLI reports separate validation and test metrics for all EDO modes", async () => {
+test("evaluation CLI compares baseline and first-order EDO on independent partitions", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sena-track-eval-"));
   try {
     const result = await runCli(directory, "static");
@@ -98,11 +98,14 @@ test("evaluation CLI reports separate validation and test metrics for all EDO mo
     assert.equal(output.partitionCounts.training, 1);
     assert.equal(output.partitionCounts.validation, 1);
     assert.equal(output.partitionCounts.test, 1);
-    for (const model of ["off", "first", "second"]){
+    for (const model of ["mediapipe-original", "edo-first-order"]){
       assert.equal(output.test.metricsByKind.static[model].count, 1);
       assert.equal(output.test.metricsByKind.static[model].accuracy, 1);
     }
-    assert.equal(output.test.metricsByKindAndComponents["static:left"].off.count, 1);
+    assert.deepEqual(Object.keys(output.test.metricsByKind.static).sort(),
+      ["edo-first-order", "mediapipe-original"]);
+    assert.equal(output.test.metricsByKindAndComponents["static:left"]["mediapipe-original"].count, 1);
+    assert.equal(output.selectedFilterConfiguration.tau, 0.06);
     assert.equal(output.test.metricsByKind.motion, null);
     assert.equal(output.split.sessionSeparationChecked, true);
   } finally {
@@ -116,30 +119,44 @@ test("evaluation CLI accepts unified-format motion captures", async () => {
     const result = await runCli(directory, "motion");
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
-    assert.equal(output.test.metricsByKind.motion.off.count, 1);
-    assert.equal(output.test.metricsByKind.motion.off.accuracy, 1);
+    assert.equal(output.test.metricsByKind.motion["mediapipe-original"].count, 1);
+    assert.equal(output.test.metricsByKind.motion["mediapipe-original"].accuracy, 1);
     assert.equal(output.test.metricsByKind.static, null);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("evaluation CLI compares explicit EDO parameter candidates on the same held-out captures", async () => {
+test("evaluation CLI selects tau on validation and tests only the selected first-order filter", async () => {
   const directory = await mkdtemp(join(tmpdir(), "sena-track-eval-"));
   try {
     const candidates = [
-      { id: "first-tau-0.12", model: "first", tau: 0.12 },
-      { id: "second-zeta-1.1-omega-18", model: "second", zeta: 1.1, omegaN: 18 }
+      { id: "tau-0.12", tau: 0.12 }
     ];
     const result = await runCli(directory, "static", 20, candidates);
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
-    assert.deepEqual(output.filterConfigurations.slice(-2), [
-      { id: "first-tau-0.12", model: "first", tau: 0.12, zeta: 0.9, omegaN: 14 },
-      { id: "second-zeta-1.1-omega-18", model: "second", tau: 0.06, zeta: 1.1, omegaN: 18 }
+    assert.deepEqual(output.filterConfigurations.slice(-1), [
+      { id: "tau-0.12", model: "first", tau: 0.12 }
     ]);
-    assert.equal(output.validation.metricsByKind.static["first-tau-0.12"].count, 1);
-    assert.equal(output.test.metricsByKind.static["second-zeta-1.1-omega-18"].count, 1);
+    assert.equal(output.validation.metricsByKind.static["tau-0.12"].count, 1);
+    assert.equal(output.selectedFilterConfiguration.model, "first");
+    assert.equal(output.test.metricsByKind.static[output.selectedFilterConfiguration.id].count, 1);
+    assert.equal("tau-0.12" in output.test.metricsByKind.static, false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("evaluation CLI clearly rejects legacy second-order candidates", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "sena-track-eval-"));
+  try {
+    const result = await runCli(directory, "static", 20, [
+      { id: "old-second-order", model: "second", zeta: 1.1, omegaN: 18 }
+    ]);
+    assert.equal(result.status, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /segundo orden no compatibles/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -164,7 +181,8 @@ test("evaluation CLI reports unconfirmed static predictions as rejects without l
   try {
     const result = await runCli(directory, "static", 14);
     assert.equal(result.status, 0, result.stderr);
-    const metrics = JSON.parse(result.stdout).test.metricsByKind.static.off;
+    const metrics = JSON.parse(result.stdout)
+      .test.metricsByKind.static["mediapipe-original"];
     assert.equal(metrics.falseRejects, 1);
     assert.equal(metrics.meanLatencyMs, null);
     assert.equal(metrics.latencySampleCount, 0);

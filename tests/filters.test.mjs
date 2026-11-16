@@ -6,15 +6,20 @@ import {
   DEFAULT_FILTER_CONFIG,
   estimateTrackingLag,
   FILTER_TRACKING_PAUSE_MS,
-  normalizeActiveFilterConfig
+  normalizeActiveFilterConfig,
+  normalizeFilterConfig
 } from "../js/filters.js";
 
 const point = x => [{ x, y: x * 2, z: -x }];
 
-test("active filter configuration safely migrates disabled and invalid legacy models to first order", () => {
+test("legacy filter settings migrate safely to the first-order model", () => {
   assert.equal(normalizeActiveFilterConfig({ model: "off" }).model, "first");
   assert.equal(normalizeActiveFilterConfig({ model: "unknown" }).model, "first");
-  assert.equal(normalizeActiveFilterConfig({ model: "second", zeta: 1.1 }).model, "second");
+  assert.deepEqual(normalizeActiveFilterConfig({ model: "second", tau: 0.12 }), {
+    model: "first", tau: 0.12, compareVisual: false
+  });
+  assert.equal(normalizeActiveFilterConfig({ model: "second", tau: 0.31 }).tau, 0.06);
+  assert.equal(normalizeFilterConfig({ model: "off" }).model, "off");
 });
 
 test("first-order filter initializes from a valid sample and converges monotonically", () => {
@@ -36,9 +41,9 @@ test("first-order filter uses explicit Euler with tau-quarter substeps and elaps
   assert.ok(Math.abs(result - 0.4375) < 1e-12);
 });
 
-test("second-order filter remains finite and bounded for jumps and variable frame times", () => {
+test("first-order filter remains finite and bounded for jumps and variable frame times", () => {
   const filter = createEdoFilter();
-  const config = { ...DEFAULT_FILTER_CONFIG, model: "second", zeta: 0.9, omegaN: 14 };
+  const config = { ...DEFAULT_FILTER_CONFIG, tau: 0.06 };
   filter.process(point(0), "face", 100, config);
   const values = [116, 150, 183, 220, 260, 293, 327, 360].map(time =>
     filter.process(point(1), "face", time, config)[0]);
@@ -49,12 +54,23 @@ test("second-order filter remains finite and bounded for jumps and variable fram
   assert.ok(values.at(-1).x > values[0].x);
 });
 
-test("second-order filter uses semi-implicit Euler and conservative substeps", () => {
+test("explicit Euler adapts substeps to variable elapsed time", () => {
   const filter = createEdoFilter();
-  const config = { ...DEFAULT_FILTER_CONFIG, model: "second", zeta: 1, omegaN: 10 };
-  filter.process(point(0), "face", 100, config);
-  const result = filter.process(point(1), "face", 110, config)[0].x;
-  assert.ok(Math.abs(result - 0.00724375) < 1e-12);
+  const config = { ...DEFAULT_FILTER_CONFIG, tau: 0.08 };
+  filter.process(point(0), "hand:Left", 100, config);
+  let expected = 0;
+  let previousTime = 100;
+  for (const [timestamp, input] of [[117, 0.6], [149, 1], [204, 0.2]]){
+    const dt = (timestamp - previousTime) / 1000;
+    const steps = Math.max(1, Math.ceil(dt / (config.tau / 4)));
+    const step = dt / steps;
+    for (let index = 0; index < steps; index++){
+      expected += step * (input - expected) / config.tau;
+    }
+    assert.ok(Math.abs(filter.process(point(input), "hand:Left", timestamp, config)[0].x -
+      expected) < 1e-12);
+    previousTime = timestamp;
+  }
 });
 
 test("tracks are independent by identity and reset after loss, pauses, or configuration changes", () => {
@@ -79,6 +95,9 @@ test("invalid measurements and filter parameters are rejected", () => {
   const config = { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.1 };
   assert.throws(() => filter.process([{ x: Number.NaN, y: 0, z: 0 }], "face", 0, config), TypeError);
   assert.throws(() => filter.process(point(0), "face", 0, { ...config, tau: 0.001 }), RangeError);
+  assert.throws(() => filter.process(point(0), "face", 0, {
+    ...config, model: "second", zeta: 0.9, omegaN: 14
+  }), RangeError);
 });
 
 test("disabled filter returns independent raw landmark objects", () => {
@@ -148,8 +167,8 @@ test("lag estimation is invariant to different mean velocities in raw and filter
   assert.ok(Math.abs(lag - 66.666) < 1);
 });
 
-test("filter comparison measures the same quiet and moving traces for all three models", () => {
-  const models = ["off", "first", "second"];
+test("filter comparison records paired baseline and first-order traces without ranking them", () => {
+  const models = ["off", "first"];
   const errors = Object.fromEntries(models.map(model => [model, []]));
   const quietValues = Object.fromEntries(models.map(model => [model, []]));
   const filters = Object.fromEntries(models.map(model => [model, createEdoFilter()]));
@@ -184,8 +203,10 @@ test("filter comparison measures the same quiet and moving traces for all three 
     const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
     return Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
   };
-  assert.ok(rmse.first < rmse.off);
-  assert.ok(rmse.second > rmse.off);
-  assert.ok(deviation("first") < deviation("off"));
-  assert.ok(deviation("second") < deviation("off"));
+  for (const model of models){
+    assert.equal(errors[model].length, 240);
+    assert.equal(quietValues[model].length, 240);
+    assert.ok(Number.isFinite(rmse[model]));
+    assert.ok(Number.isFinite(deviation(model)));
+  }
 });

@@ -158,10 +158,8 @@ export function createStorage({
 
   function readSettings(){
     return {
-      filter_model: state.filterConfig.model,
+      filter_model: "first",
       tau: state.filterConfig.tau,
-      zeta: state.filterConfig.zeta,
-      omega_n: state.filterConfig.omegaN,
       static_tolerance: Number($("tol").value),
       motion_tolerance: Number($("tolM").value),
       capture_duration: Number($("dur").value),
@@ -175,8 +173,6 @@ export function createStorage({
     state.filterConfig = normalizeActiveFilterConfig({
       model: settings.filter_model ?? state.filterConfig.model,
       tau: settings.tau ?? state.filterConfig.tau,
-      zeta: settings.zeta ?? state.filterConfig.zeta,
-      omegaN: settings.omega_n ?? state.filterConfig.omegaN,
       compareVisual: settings.show_raw_points ?? state.filterConfig.compareVisual
     });
     $("tol").value = settings.static_tolerance ?? $("tol").value;
@@ -186,6 +182,22 @@ export function createStorage({
     ui.refreshFilterControls();
     ui.refreshGeneralControls();
     state.onFilterChange?.();
+  }
+
+  function restoreCachedLibrary(cache, id, { keepSaved = false } = {}){
+    const options = {
+      ownerId: id,
+      cacheUserId: cache.userId,
+      cachePending: cache.pending
+    };
+    return {
+      samples: cache.samples.map(sample =>
+        keepSaved && sample.syncStatus === "saved" && sample.verifiedUserId === id
+          ? sample : restoreCachedSample(sample, "static", options)),
+      motions: cache.motions.map(sample =>
+        keepSaved && sample.syncStatus === "saved" && sample.verifiedUserId === id
+          ? sample : restoreCachedSample(sample, "motion", options))
+    };
   }
 
   async function readRemoteLibrary(client, id){
@@ -257,18 +269,23 @@ export function createStorage({
         height: record.image_height,
         capturedAt: record.captured_at
       };
+      if (!payload.filter && record.processing?.filter &&
+          typeof record.processing.filter === "object"){
+        payload.filter = record.processing.filter;
+      }
       if (record.format_version === 1){
         payload.legacyScope = "hands-only";
         payload.provenance = { ...(payload.provenance || {}), legacy: true, facialDataAvailable: false };
       }
       payload.syncStatus = "saved";
+      payload.verifiedUserId = id;
       (sign.kind === "motion" ? motions : samples).push(payload);
     }
 
     let settings, settingsError;
     try {
       const result = await client.from("user_settings")
-        .select("filter_model,tau,zeta,omega_n,static_tolerance,motion_tolerance,capture_duration,speech_enabled,show_raw_points")
+        .select("filter_model,tau,static_tolerance,motion_tolerance,capture_duration,speech_enabled,show_raw_points")
         .eq("user_id", id).maybeSingle();
       settings = result.data;
       settingsError = result.error;
@@ -294,8 +311,7 @@ export function createStorage({
     }
     const initialRevision = cached?.revision;
     if (cached?.pending){
-      state.samples = cached.samples.map(sample => restoreCachedSample(sample, "static"));
-      state.motions = cached.motions.map(sample => restoreCachedSample(sample, "motion"));
+      ({ samples: state.samples, motions: state.motions } = restoreCachedLibrary(cached, id));
       state.ambiguityConfig = normalizeAmbiguityConfig(cached.ambiguity);
       ui.refreshAmbiguityControls();
       applySettings(cached.settings);
@@ -313,8 +329,7 @@ export function createStorage({
       }
       const newerCache = cacheReadError ? null : await readCache(id);
       if (newerCache?.pending && newerCache.revision !== initialRevision){
-        state.samples = newerCache.samples.map(sample => restoreCachedSample(sample, "static"));
-        state.motions = newerCache.motions.map(sample => restoreCachedSample(sample, "motion"));
+        ({ samples: state.samples, motions: state.motions } = restoreCachedLibrary(newerCache, id));
         state.ambiguityConfig = normalizeAmbiguityConfig(newerCache.ambiguity);
         ui.refreshAmbiguityControls();
         applySettings(newerCache.settings);
@@ -331,14 +346,33 @@ export function createStorage({
       if (effectiveSettings) applySettings(effectiveSettings);
       if (!cacheReadError && !remote.invalidReferences.length){
         try {
-          await storeCache({
+          const stored = await withCacheWrite(async () => {
+            const latest = await readCache(id);
+            if ((latest?.revision ?? null) !== (initialRevision ?? null)) return false;
+            const nextCache = {
             version: 1, samples: remote.samples, motions: remote.motions,
             ambiguity: state.ambiguityConfig,
             settings: effectiveSettings || readSettings(),
             settingsPending: cached?.settingsPending || false,
             pending: cached?.pending || false,
-            pendingDeletes: cached?.pendingDeletes || []
+            pendingDeletes: cached?.pendingDeletes || [],
+            revision: (latest?.revision || 0) + 1
+            };
+            await storeCache(nextCache, id);
+            return nextCache;
           });
+          if (!stored){
+            const latest = await readCache(id);
+            if (latest?.pending){
+              ({ samples: state.samples, motions: state.motions } = restoreCachedLibrary(latest, id));
+              state.ambiguityConfig = normalizeAmbiguityConfig(latest.ambiguity);
+              applySettings(latest.settings);
+              setSyncStatus(pendingStatus(latest), "pending");
+              renderList();
+              void flushPending();
+              return { samples: state.samples, motions: state.motions, settings: latest.settings, pending: true };
+            }
+          }
         } catch (error){
           cacheWriteError = error;
           console.error("La biblioteca se cargó, pero no se pudo guardar su caché local.", error);
@@ -369,8 +403,7 @@ export function createStorage({
         return { samples: [], motions: [], loadError: error, cancelled: true };
       }
       if (cached){
-        state.samples = cached.samples.map(sample => restoreCachedSample(sample, "static"));
-        state.motions = cached.motions.map(sample => restoreCachedSample(sample, "motion"));
+        ({ samples: state.samples, motions: state.motions } = restoreCachedLibrary(cached, id));
         state.ambiguityConfig = normalizeAmbiguityConfig(cached.ambiguity);
         ui.refreshAmbiguityControls();
         applySettings(cached.settings);
@@ -565,6 +598,25 @@ export function createStorage({
     for (const removed of cache.pendingDeletes || []){
       await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds);
     }
+    const remote = await readRemoteLibrary(client, id);
+    const verifiedByClientId = new Map(
+      [...remote.samples, ...remote.motions].map(sample => [sample.syncId, sample])
+    );
+    for (const [items, kind] of [[cache.samples, "static"], [cache.motions, "motion"]]){
+      for (let index = 0; index < items.length; index++){
+        const sample = items[index];
+        const confirmed = typeof sample.syncId === "string" &&
+          verifiedByClientId.get(sample.syncId);
+        if (confirmed && confirmed.kind === kind && confirmed.l === sample.l){
+          items[index] = { ...confirmed, syncStatus: "saved", verifiedUserId: id };
+        } else if (sample.syncStatus !== "pending" && sample.verifiedUserId !== id &&
+            sample.syncStatus !== "invalid"){
+          items[index] = { ...sample, syncStatus: "unverified" };
+        } else if (sample.verifiedUserId !== id && sample.syncStatus === "saved"){
+          items[index] = { ...sample, syncStatus: "unverified" };
+        }
+      }
+    }
     const { data: existingSigns, error: existingSignsError } = await client.from("signs")
       .select("id,name,kind,sign_language").eq("owner_id", id);
     if (existingSignsError) throw existingSignsError;
@@ -578,10 +630,22 @@ export function createStorage({
       ...cache.motions.map(sample => ({ sample, kind: "motion" }))
     ].filter(({ sample }) => sample.syncStatus === "pending");
     for (const { sample, kind } of all){
+      const remotelyConfirmed = verifiedByClientId.get(sample.syncId);
+      if (remotelyConfirmed){
+        if (remotelyConfirmed.kind !== kind || remotelyConfirmed.l !== sample.l){
+          throw new Error(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la seña local; se conservaron ambos datos.`);
+        }
+        Object.assign(sample, remotelyConfirmed, { syncStatus: "saved", verifiedUserId: id });
+        continue;
+      }
+      if (existingIds.has(sample.syncId)){
+        throw new Error(`La captura ${sample.syncId} existe en Supabase, pero su referencia no pudo validarse; se conservó la copia local.`);
+      }
       const sign = { name: sample.l.trim(), kind, sign_language: sample.signLanguage || "LSC" };
       const signIdValue = await signId(client, id, sign, signCache);
       await uploadSample(client, id, signIdValue, sample, kind, existingIds);
       sample.syncStatus = "saved";
+      sample.verifiedUserId = id;
     }
     if (cache.settingsPending){
       const latest = await readCache(id);
@@ -647,9 +711,9 @@ export function createStorage({
             cache.pendingDeletes = [];
             cache.settingsPending = false;
             cache.samples = cache.samples.map(sample => sample.syncStatus === "pending"
-              ? { ...sample, syncStatus: "saved" } : sample);
+              ? { ...sample, syncStatus: "saved", verifiedUserId: id } : sample);
             cache.motions = cache.motions.map(sample => sample.syncStatus === "pending"
-              ? { ...sample, syncStatus: "saved" } : sample);
+              ? { ...sample, syncStatus: "saved", verifiedUserId: id } : sample);
             cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
             await storeCache(cache, id);
             return true;
@@ -660,10 +724,8 @@ export function createStorage({
           }
           preferencesSynced ||= Boolean(cache.settingsPending);
           if (userId === id){
-            state.samples = cache.samples.map(sample => sample.syncStatus === "saved"
-              ? sample : restoreCachedSample(sample, "static"));
-            state.motions = cache.motions.map(sample => sample.syncStatus === "saved"
-              ? sample : restoreCachedSample(sample, "motion"));
+            ({ samples: state.samples, motions: state.motions } =
+              restoreCachedLibrary(cache, id, { keepSaved: true }));
             renderList();
           }
         } catch (error){
@@ -675,8 +737,7 @@ export function createStorage({
           }
           if (latest?.revision === cache.revision){
             if (userId === id){
-              state.samples = latest.samples.map(sample => restoreCachedSample(sample, "static"));
-              state.motions = latest.motions.map(sample => restoreCachedSample(sample, "motion"));
+              ({ samples: state.samples, motions: state.motions } = restoreCachedLibrary(latest, id));
               renderList();
             }
           }
@@ -765,8 +826,9 @@ export function createStorage({
       ? state.samples.filter(sample => sample.l !== name) : state.samples;
     const nextMotions = kinds.includes("m")
       ? state.motions.filter(sample => sample.l !== name) : state.motions;
+    let cache;
     try {
-      await updatePendingCache(cache => {
+      cache = await updatePendingCache(cache => {
         cache.samples = nextSamples;
         cache.motions = nextMotions;
         cache.pendingDeletes ||= [];
@@ -782,8 +844,8 @@ export function createStorage({
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       throw error;
     }
-    state.samples = nextSamples;
-    state.motions = nextMotions;
+    state.samples = cache.samples;
+    state.motions = cache.motions;
     renderList();
     await flushPending();
   }
@@ -881,8 +943,8 @@ export function createStorage({
   exportButton.onclick = () => {
     const blob = new Blob([JSON.stringify({
       version: SAMPLE_FORMAT_VERSION,
-      static: state.samples.filter(isSampleRecognizable),
-      motion: state.motions.filter(isSampleRecognizable),
+      static: state.samples.filter(sample => isSampleRecognizable(sample, userId)),
+      motion: state.motions.filter(sample => isSampleRecognizable(sample, userId)),
       filters: state.filterConfig
     })], { type: "application/json" });
     const url = URL.createObjectURL(blob);

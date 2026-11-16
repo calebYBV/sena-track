@@ -53,7 +53,7 @@ Presenta las funciones principales de Seña-Track:
 - Biblioteca privada sincronizada mediante Supabase.
 - Construcción de frases.
 - Lectura de texto mediante síntesis de voz.
-- Configuración de filtros EDO de primer y segundo orden.
+- Ajuste de la constante de tiempo τ del filtro EDO de primer orden.
 - Comparación experimental entre MediaPipe original y MediaPipe + EDO.
 - Gráfica de seguimiento general de manos y rostro.
 - Estimaciones de estabilidad, vibración y retardo.
@@ -74,11 +74,10 @@ Explica:
 - Cómo se procesan manos y rostro.
 - Cómo los filtros EDO reciben las coordenadas.
 - Modelo de primer orden y su ecuación.
-- Modelo de segundo orden amortiguado.
-- Métodos de integración numérica realmente implementados.
+- Integración mediante Euler explícito con subpasos de hasta τ/4.
 - Diferencias entre señales originales y filtradas.
 - Actualización temporal y reinicio de filtros.
-- Influencia de los parámetros.
+- Influencia de τ.
 
 El reconocimiento activo utiliza siempre MediaPipe + EDO.
 

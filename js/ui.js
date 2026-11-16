@@ -284,35 +284,14 @@ bindRange("tolM", "tolMVal", v => v.toFixed(2));
 bindRange("dur", "durVal", v => v.toFixed(1) + " s");
 
 const filterControls = [
-  ["filterModel", "model"],
   ["filterTau", "tau"],
-  ["filterZeta", "zeta"],
-  ["filterOmega", "omegaN"],
   ["compareVisual", "compareVisual"]
 ];
 function refreshFilterControls(){
   const config = state.filterConfig;
-  $("filterModel").value = config.model;
   $("filterTau").value = config.tau;
-  $("filterZeta").value = config.zeta;
-  $("filterOmega").value = config.omegaN;
   $("compareVisual").checked = config.compareVisual;
   $("filterTauValue").textContent = `${Number(config.tau).toFixed(2)} s`;
-  $("filterZetaValue").textContent = Number(config.zeta).toFixed(1);
-  $("filterOmegaValue").textContent = `${Number(config.omegaN).toFixed(0)} rad/s`;
-  $("tauControl").hidden = config.model !== "first";
-  $("zetaControl").hidden = config.model !== "second";
-  $("omegaControl").hidden = config.model !== "second";
-  $("firstEquation").hidden = config.model !== "first";
-  $("secondEquation").hidden = config.model !== "second";
-  $("firstCalculation").hidden = config.model !== "first";
-  $("secondCalculation").hidden = config.model !== "second";
-  $("activeModelName").textContent = config.model === "first" ? "Filtro de primer orden" :
-    "Modelo de segundo orden amortiguado";
-  $("settingsModelName").textContent = $("activeModelName").textContent;
-  $("filterModelDescription").textContent = config.model === "first"
-    ? "Acerca gradualmente las coordenadas filtradas a las mediciones de MediaPipe para reducir vibraciones y saltos."
-    : "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones.";
   $("rawBranchLabel").textContent = "MediaPipe · comparación";
   $("filteredBranchLabel").textContent = "MediaPipe + EDO · reconocimiento";
   $("compareVisualLabel").textContent = "Superponer coordenadas originales y EDO (más carga gráfica)";
@@ -320,18 +299,15 @@ function refreshFilterControls(){
 for (const [id, key] of filterControls){
   const update = persist => {
     const element = $(id);
-    state.filterConfig[key] = id === "compareVisual" ? element.checked :
-      (key === "model" ? element.value : Number(element.value));
+    state.filterConfig[key] = key === "compareVisual" ? element.checked : Number(element.value);
     refreshFilterControls();
     if (key !== "compareVisual") state.onFilterChange?.();
     if (persist) void savePreferences();
   };
-  if (id === "filterTau" || id === "filterZeta" || id === "filterOmega"){
+  if (id === "filterTau"){
     $(id).addEventListener("input", () => {
       const value = Number($(id).value);
-      if (key === "tau") $("filterTauValue").textContent = `${value.toFixed(2)} s`;
-      if (key === "zeta") $("filterZetaValue").textContent = value.toFixed(1);
-      if (key === "omegaN") $("filterOmegaValue").textContent = `${value.toFixed(0)} rad/s`;
+      $("filterTauValue").textContent = `${value.toFixed(2)} s`;
     });
     $(id).addEventListener("change", () => update(true));
   } else $(id).addEventListener("change", () => update(true));
@@ -362,7 +338,7 @@ function refreshReferences(){
   const select = evaluationReference;
   const selected = select.value;
   const labels = new Set([...state.samples, ...state.motions]
-    .filter(isSampleRecognizable)
+    .filter(sample => isSampleRecognizable(sample, state.userId))
     .map(example => example.l));
   select.replaceChildren(new Option("Candidata de la rama principal", ""));
   for (const label of labels) select.add(new Option(label, label));
@@ -377,7 +353,7 @@ function setEvaluationEnabled(enabled){
   panel.setAttribute("aria-disabled", String(!enabled));
   evaluationReference.disabled = !enabled;
   $("compareVisual").disabled = !enabled;
-  for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
+  $("filterTau").disabled = !enabled;
   if (!enabled){
     lastComparison = null;
     $("comparisonStatus").textContent = "Reconocimiento pausado";

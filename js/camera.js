@@ -196,7 +196,7 @@ function compareStatic(track, timestamp){
   const mainPrediction = selectActivePrediction(filteredPrediction);
   const reference = requested || mainPrediction?.label;
   const examples = state.samples.filter(sample =>
-    sample.l === reference && isSampleRecognizable(sample));
+    sample.l === reference && isSampleRecognizable(sample, state.userId));
   const availability = recognition.referenceAvailability(filteredFrame, "static");
   updateComparison({
     kind: "static",
@@ -213,8 +213,8 @@ function compareStatic(track, timestamp){
 /* ---------- Bucle principal ---------- */
 function processFrame(){
   if (video.readyState >= 2 && video.currentTime !== lastTime){
-    if (!["first", "second"].includes(state.filterConfig.model)){
-      throw new RangeError("El reconocimiento requiere un filtro EDO de primer o segundo orden.");
+    if (state.filterConfig.model !== "first"){
+      throw new RangeError("El reconocimiento requiere el filtro EDO de primer orden.");
     }
     const timestamp = performance.now();
     const recognitionGeneration = state.recognitionGeneration;
@@ -255,7 +255,7 @@ function processFrame(){
       faceFeatures: !!face?.rawFeatures && !!face?.filteredFeatures
     };
     const requiredMissing = state.samples.some(sample =>
-      isSampleRecognizable(sample) && sample.components && ((sample.components.left && !presence.Left) ||
+      isSampleRecognizable(sample, state.userId) && sample.components && ((sample.components.left && !presence.Left) ||
         (sample.components.right && !presence.Right) ||
         (sample.components.face && !presence.faceFeatures)));
     $("componentStatus").textContent =

@@ -51,8 +51,7 @@ function setRecognitionEnabled(enabled){
 function filterMetadata(config){
   return {
     ...config,
-    method: config.model === "first" ? "explicit-euler-substeps-tau-quarter" :
-      config.model === "second" ? "semi-implicit-euler-substeps-conservative" : "disabled",
+    method: config.model === "first" ? "explicit-euler-substeps-tau-quarter" : "disabled",
     version: 1
   };
 }
@@ -216,7 +215,7 @@ function recognizeMotion(res){
       }, "static");
     const staticReference = $("evaluationReference").value || staticMain?.label;
     const staticExamples = state.samples.filter(example =>
-      example.l === staticReference && isSampleRecognizable(example));
+      example.l === staticReference && isSampleRecognizable(example, state.userId));
     updateComparison({
       kind: "static", detected: true, rawPrediction: staticRaw,
       filteredPrediction: staticFiltered,
@@ -231,7 +230,7 @@ function recognizeMotion(res){
     motion.frames = motion.frames.slice(-10);
     const tail = motion.frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
     const quiet = tail.length >= 8 && state.motions.every(sample => {
-      if (!isSampleRecognizable(sample)) return true;
+      if (!isSampleRecognizable(sample, state.userId)) return true;
       const required = sample.components || {
         left: sample.captureMeta?.handedness
           ? sample.captureMeta.handedness === "Left" : res.hand === "Left",
@@ -262,7 +261,7 @@ function recognizeMotion(res){
   }
   const rawFrames = frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
   const motionAnalyses = state.motions
-    .filter(isSampleRecognizable)
+    .filter(sample => isSampleRecognizable(sample, state.userId))
     .map(sample => {
       const required = sample.components || {
         left: sample.captureMeta?.handedness
@@ -312,7 +311,7 @@ function recognizeMotion(res){
       const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
       const reference = $("evaluationReference").value || selected?.label;
       const examples = state.motions.filter(example =>
-        example.l === reference && isSampleRecognizable(example));
+        example.l === reference && isSampleRecognizable(example, state.userId));
       updateComparison({
         kind: "motion",
         detected: motionAvailability.available && motionAvailability.compatible,

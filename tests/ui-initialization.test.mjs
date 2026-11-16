@@ -61,8 +61,7 @@ function installUI(html){
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   const initialValues = {
     tol: "0.8", tolM: "0.7", dur: "2",
-    filterModel: "first", filterTau: "0.06", filterZeta: "0.9",
-    filterOmega: "14"
+    filterTau: "0.06"
   };
   for (const [id, value] of Object.entries(initialValues)) elements.get(id).value = value;
   elements.get("speechEnabled").checked = true;
@@ -97,9 +96,7 @@ function installUI(html){
     samples: [{ l: "Hola", syncStatus: "saved" }],
     motions: [{ l: "Adiós", syncStatus: "saved" }],
     phrase: "",
-    filterConfig: {
-      model: "first", tau: 0.06, zeta: 0.9, omegaN: 14, compareVisual: false
-    },
+    filterConfig: { model: "first", tau: 0.06, compareVisual: false },
     ambiguityConfig: { absoluteMargin: 0.04, relativeMargin: 0.08 }
   };
   const ui = createUI({

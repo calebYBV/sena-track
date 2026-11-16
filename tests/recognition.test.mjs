@@ -20,12 +20,18 @@ function makeRecognition(state, values = { tol: "1.5", tolM: "2" },
     const collection = state[kind] || [];
     for (const sample of collection){
       if (sample && sample.syncStatus === undefined) sample.syncStatus = "saved";
+      if (sample && sample.filter === undefined){
+        sample.filter = { model: "first", tau: (state.filterConfig || DEFAULT_FILTER_CONFIG).tau };
+      }
     }
     Object.defineProperty(collection, "push", {
       configurable: true,
       value(...samples){
         for (const sample of samples){
           if (sample && sample.syncStatus === undefined) sample.syncStatus = "saved";
+          if (sample && sample.filter === undefined){
+            sample.filter = { model: "first", tau: (state.filterConfig || DEFAULT_FILTER_CONFIG).tau };
+          }
         }
         return Array.prototype.push.apply(this, samples);
       }
@@ -344,7 +350,7 @@ test("filtered references are regenerated from raw captures when the EDO config 
 
   for (const config of [
     { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.03 },
-    { ...DEFAULT_FILTER_CONFIG, model: "second", zeta: 1.2, omegaN: 22 },
+    { ...DEFAULT_FILTER_CONFIG, model: "first", tau: 0.08 },
     { ...DEFAULT_FILTER_CONFIG, model: "off" }
   ]){
     state.filterConfig = config;
@@ -457,6 +463,7 @@ test("legacy references remain unchanged and expose unavailable EDO regeneration
     l: "Legada",
     kind: "static",
     components: { left: true, right: false, face: false },
+    filter: null,
     h: { hands: { Left: zero(63) }, placement: null, face: null }
   };
   state.samples.push(legacy);
@@ -466,7 +473,7 @@ test("legacy references remain unchanged and expose unavailable EDO regeneration
 });
 
 test("legacy feature-only references remain analyzable offline with an explicit mismatch flag", () => {
-  const legacy = { l: "Legada", f: zero(63) };
+  const legacy = { l: "Legada", f: zero(63), filter: null };
   const recognition = makeRecognition({
     samples: [legacy],
     motions: [],
@@ -477,6 +484,37 @@ test("legacy feature-only references remain analyzable offline with an explicit 
 
   assert.equal(recognition.classify(zero(63), "raw")?.label, "Legada");
   assert.equal(recognition.hasFilterReferenceMismatch(legacy), true);
+});
+
+test("legacy filtered references require matching first-order metadata and tau", () => {
+  const state = {
+    samples: [{
+      l: "Legada",
+      f: zero(63),
+      filter: {
+        model: "first",
+        tau: DEFAULT_FILTER_CONFIG.tau,
+        method: "explicit-euler-substeps-tau-quarter"
+      }
+    }],
+    motions: [],
+    filterConfig: { ...DEFAULT_FILTER_CONFIG }
+  };
+  const recognition = makeRecognition(state);
+
+  assert.equal(recognition.classify(zero(63))?.label, "Legada");
+  state.filterConfig.tau += 0.01;
+  assert.equal(recognition.classify(zero(63)), null);
+  const unavailable = recognition.referenceAvailability({
+    hands: { Left: Array.from({ length: 21 }, () => [0, 0, 0]) }
+  });
+  assert.equal(unavailable.available, false);
+  assert.match(unavailable.message, /metadatos compatibles/);
+  assert.equal(state.samples.length, 1);
+  assert.deepEqual(state.samples[0].f, zero(63));
+
+  state.samples[0].filter = { model: "second", tau: state.filterConfig.tau };
+  assert.equal(recognition.classify(zero(63)), null);
 });
 
 test("motion distance uses paired references and applies one raw-defined crop to both branches", () => {
