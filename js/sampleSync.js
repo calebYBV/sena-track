@@ -1,26 +1,36 @@
 import { validateSample } from "./sampleFormat.js";
 
+const RECOGNIZABLE_STATUSES = new Set(["saved", "local"]);
+const VALID_SYNC_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
 export function isSampleRecognizable(sample){
-  return sample?.syncStatus !== "pending" &&
-    sample?.syncStatus !== "unverified" &&
-    sample?.syncStatus !== "invalid";
+  return Boolean(sample && RECOGNIZABLE_STATUSES.has(sample.syncStatus));
 }
 
 export function restoreCachedSample(sample, kind){
-  let syncStatus = sample?.syncStatus;
+  const originalStatus = sample?.syncStatus;
   try {
     validateSample(sample, kind);
   } catch (error){
     return {
       ...sample,
-      syncStatus: syncStatus === "pending" ? "pending" : "invalid",
+      syncStatus: "invalid",
       syncIssue: error.message
     };
   }
-  if (syncStatus === "pending" || syncStatus === "local") return sample;
-  if (syncStatus === "saved") return { ...sample, syncStatus: "local" };
-  if (typeof sample.syncId === "string" && sample.syncId.length){
-    return { ...sample, syncStatus: "local" };
+  if (originalStatus === "pending"){
+    return { ...sample, syncStatus: "pending" };
   }
-  return { ...sample, syncStatus: "unverified" };
+  // Only previously confirmed, account-scoped cache entries can be used offline.
+  // An arbitrary syncId by itself is not proof of a successful upload.
+  const confirmed = RECOGNIZABLE_STATUSES.has(originalStatus) &&
+    typeof sample.syncId === "string" && VALID_SYNC_ID.test(sample.syncId);
+  if (confirmed){
+    return { ...sample, syncStatus: "local", syncIssue: undefined };
+  }
+  return {
+    ...sample,
+    syncStatus: "unverified",
+    syncIssue: "No se pudo confirmar que esta captura local estuviera guardada en la cuenta."
+  };
 }

@@ -15,6 +15,22 @@ const sequence = value => Array.from({ length: 24 }, () => Array(65).fill(value)
 
 function makeRecognition(state, values = { tol: "1.5", tolM: "2" },
     video = { videoWidth: 640, videoHeight: 480 }){
+  // Fixtures represent already persisted examples unless they explicitly supply another status.
+  for (const kind of ["samples", "motions"]){
+    const collection = state[kind] || [];
+    for (const sample of collection){
+      if (sample && sample.syncStatus === undefined) sample.syncStatus = "saved";
+    }
+    Object.defineProperty(collection, "push", {
+      configurable: true,
+      value(...samples){
+        for (const sample of samples){
+          if (sample && sample.syncStatus === undefined) sample.syncStatus = "saved";
+        }
+        return Array.prototype.push.apply(this, samples);
+      }
+    });
+  }
   return createRecognition({
     state,
     dom: { $: id => ({ value: values[id] }), video }
