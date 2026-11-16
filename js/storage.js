@@ -27,6 +27,7 @@ export function createStorage({
   let syncRequested = false;
   let userLoadToken = 0;
   let cacheDatabasePromise = null;
+  let cacheWriteTail = Promise.resolve();
 
   function parseLibrary(data){
     if (data && Array.isArray(data.s)) return { s: data.s, m: data.m || [], filters: data.filters };
@@ -135,10 +136,24 @@ export function createStorage({
     });
   }
 
-  async function storePendingCache(cache){
-    cache.revision = (await readCache())?.revision + 1 || 1;
-    cache.pending = true;
-    await storeCache(cache);
+  // Serialize every local read-modify-write as one unit. A revision number
+  // by itself does not prevent concurrent writers from losing a newer snapshot.
+  function withCacheWrite(work){
+    const result = cacheWriteTail.then(work, work);
+    cacheWriteTail = result.catch(() => {});
+    return result;
+  }
+
+  function updatePendingCache(mutate, id = userId){
+    return withCacheWrite(async () => {
+      if (!id || id !== userId) throw new Error("La cuenta cambió durante la operación.");
+      const cache = await readCache(id) || currentSnapshot();
+      await mutate(cache);
+      cache.revision = (Number.isFinite(cache.revision) ? cache.revision : 0) + 1;
+      cache.pending = true;
+      await storeCache(cache, id);
+      return cache;
+    });
   }
 
   function readSettings(){
@@ -571,8 +586,6 @@ export function createStorage({
     if (cache.settingsPending){
       const latest = await readCache(id);
       if (latest?.revision !== cache.revision) return false;
-      cache.pending = true;
-      await storeCache(cache, id);
     }
     if (cache.settingsPending){
       try {
@@ -625,20 +638,27 @@ export function createStorage({
             syncRequested = true;
             continue;
           }
-          const latest = await readCache(id);
-          if (latest?.revision !== cache.revision){
+          const committed = await withCacheWrite(async () => {
+            const latest = await readCache(id);
+            if (!latest || latest.revision !== cache.revision) return false;
+            // The remote write finished for this exact revision. Never commit a
+            // stale snapshot over a capture, preference, or deletion queued later.
+            cache.pending = false;
+            cache.pendingDeletes = [];
+            cache.settingsPending = false;
+            cache.samples = cache.samples.map(sample => sample.syncStatus === "pending"
+              ? { ...sample, syncStatus: "saved" } : sample);
+            cache.motions = cache.motions.map(sample => sample.syncStatus === "pending"
+              ? { ...sample, syncStatus: "saved" } : sample);
+            cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
+            await storeCache(cache, id);
+            return true;
+          });
+          if (!committed){
             syncRequested = true;
             continue;
           }
           preferencesSynced ||= Boolean(cache.settingsPending);
-          cache.pending = false;
-          cache.pendingDeletes = [];
-          cache.settingsPending = false;
-          cache.samples = cache.samples.map(sample => sample.syncStatus === "pending"
-            ? { ...sample, syncStatus: "saved" } : sample);
-          cache.motions = cache.motions.map(sample => sample.syncStatus === "pending"
-            ? { ...sample, syncStatus: "saved" } : sample);
-          await storeCache(cache, id);
           if (userId === id){
             state.samples = cache.samples.map(sample => sample.syncStatus === "saved"
               ? sample : restoreCachedSample(sample, "static"));
@@ -677,14 +697,14 @@ export function createStorage({
   async function saveAll(){
     if (!userId) return false;
     try {
-      const cache = await readCache() || currentSnapshot();
-      cache.samples = state.samples;
-      cache.motions = state.motions;
-      cache.filters = state.filterConfig;
-      cache.ambiguity = state.ambiguityConfig;
-      cache.settings = readSettings();
-      cache.settingsPending = true;
-      await storePendingCache(cache);
+      await updatePendingCache(cache => {
+        cache.samples = state.samples;
+        cache.motions = state.motions;
+        cache.filters = state.filterConfig;
+        cache.ambiguity = state.ambiguityConfig;
+        cache.settings = readSettings();
+        cache.settingsPending = true;
+      });
     } catch (error){
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       throw error;
@@ -703,12 +723,13 @@ export function createStorage({
   async function savePreferences(){
     if (!userId) return;
     try {
-      const cache = await readCache() || currentSnapshot();
-      cache.filters = state.filterConfig;
-      cache.ambiguity = state.ambiguityConfig;
-      cache.settings = readSettings();
-      cache.settingsPending = true;
-      await storePendingCache(cache);
+      await updatePendingCache(cache => {
+        // Preference writes must never replace a newer capture or deletion queue.
+        cache.filters = state.filterConfig;
+        cache.ambiguity = state.ambiguityConfig;
+        cache.settings = readSettings();
+        cache.settingsPending = true;
+      });
     } catch (error){
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       return false;
@@ -744,19 +765,19 @@ export function createStorage({
       ? state.samples.filter(sample => sample.l !== name) : state.samples;
     const nextMotions = kinds.includes("m")
       ? state.motions.filter(sample => sample.l !== name) : state.motions;
-    const cache = await readCache() || currentSnapshot();
-    cache.samples = nextSamples;
-    cache.motions = nextMotions;
-    cache.pendingDeletes ||= [];
-    for (const [sampleKind, clientIds] of clientIdsByKind){
-      if (!clientIds.length) continue;
-      const dbKind = sampleKind === "s" ? "static" : "motion";
-      const queued = cache.pendingDeletes.find(item => item.name === name && item.kind === dbKind);
-      if (queued) queued.clientIds = [...new Set([...(queued.clientIds || []), ...clientIds])];
-      else cache.pendingDeletes.push({ name, kind: dbKind, clientIds });
-    }
     try {
-      await storePendingCache(cache);
+      await updatePendingCache(cache => {
+        cache.samples = nextSamples;
+        cache.motions = nextMotions;
+        cache.pendingDeletes ||= [];
+        for (const [sampleKind, clientIds] of clientIdsByKind){
+          if (!clientIds.length) continue;
+          const dbKind = sampleKind === "s" ? "static" : "motion";
+          const queued = cache.pendingDeletes.find(item => item.name === name && item.kind === dbKind);
+          if (queued) queued.clientIds = [...new Set([...(queued.clientIds || []), ...clientIds])];
+          else cache.pendingDeletes.push({ name, kind: dbKind, clientIds });
+        }
+      });
     } catch (error){
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       throw error;
@@ -905,13 +926,13 @@ export function createStorage({
         group.clientIds.push(await ensureSampleId(sample));
         names.set(key, group);
       }
-      const cache = await readCache() || currentSnapshot();
-      cache.samples = [];
-      cache.motions = [];
-      cache.pendingDeletes = [...(cache.pendingDeletes || []), ...[...names.values()].map(({ name, kind, clientIds }) => ({
-        name, kind: kind === "s" ? "static" : "motion", clientIds
-      }))];
-      await storePendingCache(cache);
+      await updatePendingCache(cache => {
+        cache.samples = [];
+        cache.motions = [];
+        cache.pendingDeletes = [...(cache.pendingDeletes || []), ...[...names.values()].map(({ name, kind, clientIds }) => ({
+          name, kind: kind === "s" ? "static" : "motion", clientIds
+        }))];
+      });
       state.samples = [];
       state.motions = [];
     } catch (error){
