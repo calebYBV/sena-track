@@ -10,6 +10,7 @@ import {
 } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 import { globalTraceDisplacement } from "./globalTrace.js";
+import { isSampleRecognizable } from "./sampleSync.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -222,9 +223,15 @@ function renderList(){
     const tag = document.createElement("span");
     tag.className = "tag" + (hasLegacy ? " legacy" : "");
     const hasPending = examples.some(example => example.syncStatus === "pending");
+    const hasLocal = examples.some(example => example.syncStatus === "local");
+    const hasInvalid = examples.some(example => example.syncStatus === "invalid");
+    const hasUnverified = examples.some(example => example.syncStatus === "unverified");
     tag.textContent = [
       hasLegacy ? "incluye señas anteriores" : "",
-      hasPending ? "pendiente de sincronización" : ""
+      hasPending ? "incluye muestras pendientes de subida" : "",
+      hasLocal ? "copia local verificada" : "",
+      hasInvalid ? "referencia inválida" : "",
+      hasUnverified ? "referencia local sin verificar" : ""
     ].filter(Boolean).join(" · ");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
     cnt.textContent = `${countCapturesForLabel(examples, label)} capturas`;
@@ -277,35 +284,14 @@ bindRange("tolM", "tolMVal", v => v.toFixed(2));
 bindRange("dur", "durVal", v => v.toFixed(1) + " s");
 
 const filterControls = [
-  ["filterModel", "model"],
   ["filterTau", "tau"],
-  ["filterZeta", "zeta"],
-  ["filterOmega", "omegaN"],
   ["compareVisual", "compareVisual"]
 ];
 function refreshFilterControls(){
   const config = state.filterConfig;
-  $("filterModel").value = config.model;
   $("filterTau").value = config.tau;
-  $("filterZeta").value = config.zeta;
-  $("filterOmega").value = config.omegaN;
   $("compareVisual").checked = config.compareVisual;
   $("filterTauValue").textContent = `${Number(config.tau).toFixed(2)} s`;
-  $("filterZetaValue").textContent = Number(config.zeta).toFixed(1);
-  $("filterOmegaValue").textContent = `${Number(config.omegaN).toFixed(0)} rad/s`;
-  $("tauControl").hidden = config.model !== "first";
-  $("zetaControl").hidden = config.model !== "second";
-  $("omegaControl").hidden = config.model !== "second";
-  $("firstEquation").hidden = config.model !== "first";
-  $("secondEquation").hidden = config.model !== "second";
-  $("firstCalculation").hidden = config.model !== "first";
-  $("secondCalculation").hidden = config.model !== "second";
-  $("activeModelName").textContent = config.model === "first" ? "Filtro de primer orden" :
-    "Modelo de segundo orden amortiguado";
-  $("settingsModelName").textContent = $("activeModelName").textContent;
-  $("filterModelDescription").textContent = config.model === "first"
-    ? "Acerca gradualmente las coordenadas filtradas a las mediciones de MediaPipe para reducir vibraciones y saltos."
-    : "Considera la posición y la velocidad del punto filtrado para ajustar cómo acelera o frena al seguir las mediciones.";
   $("rawBranchLabel").textContent = "MediaPipe · comparación";
   $("filteredBranchLabel").textContent = "MediaPipe + EDO · reconocimiento";
   $("compareVisualLabel").textContent = "Superponer coordenadas originales y EDO (más carga gráfica)";
@@ -313,18 +299,15 @@ function refreshFilterControls(){
 for (const [id, key] of filterControls){
   const update = persist => {
     const element = $(id);
-    state.filterConfig[key] = id === "compareVisual" ? element.checked :
-      (key === "model" ? element.value : Number(element.value));
+    state.filterConfig[key] = key === "compareVisual" ? element.checked : Number(element.value);
     refreshFilterControls();
     if (key !== "compareVisual") state.onFilterChange?.();
     if (persist) void savePreferences();
   };
-  if (id === "filterTau" || id === "filterZeta" || id === "filterOmega"){
+  if (id === "filterTau"){
     $(id).addEventListener("input", () => {
       const value = Number($(id).value);
-      if (key === "tau") $("filterTauValue").textContent = `${value.toFixed(2)} s`;
-      if (key === "zeta") $("filterZetaValue").textContent = value.toFixed(1);
-      if (key === "omegaN") $("filterOmegaValue").textContent = `${value.toFixed(0)} rad/s`;
+      $("filterTauValue").textContent = `${value.toFixed(2)} s`;
     });
     $(id).addEventListener("change", () => update(true));
   } else $(id).addEventListener("change", () => update(true));
@@ -355,7 +338,7 @@ function refreshReferences(){
   const select = evaluationReference;
   const selected = select.value;
   const labels = new Set([...state.samples, ...state.motions]
-    .filter(example => example.syncStatus !== "pending")
+    .filter(sample => isSampleRecognizable(sample, state.userId))
     .map(example => example.l));
   select.replaceChildren(new Option("Candidata de la rama principal", ""));
   for (const label of labels) select.add(new Option(label, label));
@@ -370,7 +353,7 @@ function setEvaluationEnabled(enabled){
   panel.setAttribute("aria-disabled", String(!enabled));
   evaluationReference.disabled = !enabled;
   $("compareVisual").disabled = !enabled;
-  for (const id of ["filterModel", "filterTau", "filterZeta", "filterOmega"]) $(id).disabled = !enabled;
+  $("filterTau").disabled = !enabled;
   if (!enabled){
     lastComparison = null;
     $("comparisonStatus").textContent = "Reconocimiento pausado";
@@ -389,9 +372,13 @@ function setEvaluationEnabled(enabled){
     renderComparison();
   }
 }
-function predictionText(prediction){
+function predictionText(prediction, comparison){
   if (prediction?.reason === "ambiguous") return "Ambigua";
-  return prediction?.label || "No identificada";
+  if (prediction?.label) return prediction.label;
+  if (/referencias utilizables/.test(comparison?.reason || "")) return "Sin referencias utilizables";
+  if (/No hay señas compatibles/.test(comparison?.reason || "")) return "Sin señas compatibles";
+  if (/requerido fuera de cámara/.test(comparison?.reason || "")) return "Componente requerido ausente";
+  return "No identificada";
 }
 function renderComparison(){
   if ($("evaluationPanel").getAttribute("aria-disabled") === "true") return;
@@ -402,8 +389,8 @@ function renderComparison(){
   reductionReadout.setAttribute("aria-label", "Diferencia de distancia no disponible");
   executionStatus.textContent = "Esperando ejecución";
   executionStatus.classList.remove("is-current", "is-unavailable");
-  $("rawPrediction").textContent = predictionText(result?.rawPrediction);
-  $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
+  $("rawPrediction").textContent = predictionText(result?.rawPrediction, result);
+  $("filteredPrediction").textContent = predictionText(result?.filteredPrediction, result);
   $("rawDistance").textContent = "—";
   $("filteredDistance").textContent = "—";
   $("distanceReduction").textContent = "No disponible";
@@ -583,8 +570,15 @@ function showNoHand(){
   signEl.textContent = "Sin mano"; signEl.className = "sign idle"; metaEl.textContent = "";
 }
 
+function showRecognitionMessage(message){
+  if (performance.now() < state.readoutLock) return;
+  signEl.textContent = message;
+  signEl.className = "sign idle";
+  metaEl.textContent = "";
+}
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
+  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls,
+  refreshAmbiguityControls, showRecognitionMessage };
 }

@@ -1,0 +1,23 @@
+name: JavaScript tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - fix/sign-library-sync-recognition
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check syntax
+        run: |
+          for file in js/*.js tests/*.mjs; do node --check "$file"; done
+      - name: Run unit tests
+        run: npm test

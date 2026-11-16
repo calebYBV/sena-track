@@ -1,33 +1,23 @@
 export const DEFAULT_FILTER_CONFIG = Object.freeze({
   model: "first",
   tau: 0.06,
-  zeta: 0.9,
-  omegaN: 14,
   compareVisual: false
 });
 
 export const FILTER_TRACKING_PAUSE_MS = 500;
 
 export function normalizeFilterConfig(config){
-  const candidate = { ...DEFAULT_FILTER_CONFIG, ...(config || {}) };
+  const candidate = config || {};
   return {
-    model: ["off", "first", "second"].includes(candidate.model) ? candidate.model : DEFAULT_FILTER_CONFIG.model,
+    model: candidate.model === "off" ? "off" : "first",
     tau: Number.isFinite(candidate.tau) && candidate.tau >= 0.01 && candidate.tau <= 0.3
       ? candidate.tau : DEFAULT_FILTER_CONFIG.tau,
-    zeta: Number.isFinite(candidate.zeta) && candidate.zeta >= 0.2 && candidate.zeta <= 2
-      ? candidate.zeta : DEFAULT_FILTER_CONFIG.zeta,
-    omegaN: Number.isFinite(candidate.omegaN) && candidate.omegaN >= 2 && candidate.omegaN <= 30
-      ? candidate.omegaN : DEFAULT_FILTER_CONFIG.omegaN,
     compareVisual: Boolean(candidate.compareVisual)
   };
 }
 
 export function normalizeActiveFilterConfig(config){
-  const candidate = { ...DEFAULT_FILTER_CONFIG, ...(config || {}) };
-  return normalizeFilterConfig({
-    ...candidate,
-    model: candidate.model === "off" ? DEFAULT_FILTER_CONFIG.model : candidate.model
-  });
+  return { ...normalizeFilterConfig(config), model: "first" };
 }
 
 const cloneLandmarks = points => points.map(({ x, y, z }) => ({ x, y, z }));
@@ -37,10 +27,8 @@ const wrapHeadAngle = value => ((value + 1) % 2 + 2) % 2 - 1;
 const nearestHeadAngle = (value, reference) =>
   reference + ((value - reference + 1) % 2 + 2) % 2 - 1;
 const validFilterConfig = config =>
-  config && ["off", "first", "second"].includes(config.model) &&
-  finite(config.tau) && config.tau >= 0.01 && config.tau <= 0.3 &&
-  finite(config.zeta) && config.zeta >= 0.2 && config.zeta <= 2 &&
-  finite(config.omegaN) && config.omegaN >= 2 && config.omegaN <= 30;
+  config && ["off", "first"].includes(config.model) &&
+  finite(config.tau) && config.tau >= 0.01 && config.tau <= 0.3;
 
 export function calculateVibrationReduction(raw, filtered){
   if (!finite(raw) || !finite(filtered) || raw <= 1e-6) return null;
@@ -172,7 +160,7 @@ export function createEdoFilter(){
       throw new RangeError("Los parámetros EDO están fuera de los límites permitidos.");
     }
     if (config.model === "off") return cloneLandmarks(points);
-    const signature = `${config.model}:${config.tau}:${config.zeta}:${config.omegaN}`;
+    const signature = `${config.model}:${config.tau}`;
     let track = tracks.get(identity);
     if (track && (track.signature !== signature || timestamp < track.timestamp ||
         timestamp - track.timestamp > FILTER_TRACKING_PAUSE_MS)){
@@ -183,73 +171,48 @@ export function createEdoFilter(){
       tracks.set(identity, {
         signature,
         timestamp,
-        points: points.map(({ x, y, z }) => ({
-          x: { y: x, v: 0 },
-          y: { y: y, v: 0 },
-          z: { y: z, v: 0 }
-        }))
+        points: cloneLandmarks(points)
       });
       return cloneLandmarks(points);
     }
     if (timestamp === track.timestamp){
-      return track.points.map((point, index) => {
-        const x = point.x.y;
-        return {
-          x: identity === "face:features" && HEAD_ANGLE_FEATURES.has(index)
-            ? wrapHeadAngle(x) : x,
-          y: point.y.y,
-          z: point.z.y
-        };
-      });
+      return cloneLandmarks(track.points).map((point, index) => ({
+        ...point,
+        x: identity === "face:features" && HEAD_ANGLE_FEATURES.has(index)
+          ? wrapHeadAngle(point.x) : point.x
+      }));
     }
     if (points.length !== track.points.length){
       tracks.delete(identity);
       return process(points, identity, timestamp, config);
     }
     const dt = (timestamp - track.timestamp) / 1000;
-    const maxStep = config.model === "first"
-      ? config.tau / 4
-      : Math.min(0.1 / config.omegaN, 0.1 / (2 * config.zeta * config.omegaN));
-    const steps = Math.ceil(dt / maxStep);
+    const hMax = config.tau / 4;
+    const steps = Math.max(1, Math.ceil(dt / hMax));
     const step = dt / steps;
     const filtered = points.map((point, index) => {
       const previous = track.points[index];
-      const next = {};
+      const next = { ...point };
       for (const axis of ["x", "y", "z"]){
         const input = identity === "face:features" && axis === "x" &&
           HEAD_ANGLE_FEATURES.has(index)
-          ? nearestHeadAngle(point.x, previous.x.y) : point[axis];
+          ? nearestHeadAngle(point.x, previous.x) : point[axis];
         if (!finite(input)) throw new TypeError("MediaPipe devolvió una coordenada no finita.");
-        const value = previous[axis];
-        if (config.model === "first"){
-          let y = value.y;
-          for (let i = 0; i < steps; i++){
-            const rate = (input - y) / config.tau;
-            y += step * rate;
-          }
-          next[axis] = { y, v: 0 };
-        } else {
-          let y = value.y, v = value.v;
-          for (let i = 0; i < steps; i++){
-            const a = config.omegaN ** 2 * (input - y) -
-              2 * config.zeta * config.omegaN * v;
-            v += step * a;
-            y += step * v;
-          }
-          next[axis] = { y, v };
+        let value = previous[axis];
+        for (let i = 0; i < steps; i++){
+          value += step * (input - value) / config.tau;
         }
+        next[axis] = value;
       }
       return next;
     });
     track.points = filtered;
     track.timestamp = timestamp;
     return filtered.map((point, index) => {
-      const x = point.x.y;
       return {
+        ...point,
         x: identity === "face:features" && HEAD_ANGLE_FEATURES.has(index)
-          ? wrapHeadAngle(x) : x,
-        y: point.y.y,
-        z: point.z.y
+          ? wrapHeadAngle(point.x) : point.x
       };
     });
   }

@@ -8,10 +8,14 @@ import {
 } from "./recognitionState.js";
 import { SAMPLE_FORMAT_VERSION } from "./sampleFormat.js";
 import { analyzeUnifiedCapture } from "./unifiedCapture.js";
+import { isSampleRecognizable } from "./sampleSync.js";
 
 export function createTraining({ state, dom, ui, storage, recognition }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
-const { setNote, renderList, showLocked, addToPhrase, updateComparison, setEvaluationEnabled } = ui;
+const {
+  setNote, renderList, showLocked, addToPhrase, updateComparison,
+  setEvaluationEnabled, showRecognitionMessage
+} = ui;
 const { saveAll } = storage;
 const { toSequencePair, classifyFrame, meanDescriptors,
   holisticMotionSequence } = recognition;
@@ -47,8 +51,7 @@ function setRecognitionEnabled(enabled){
 function filterMetadata(config){
   return {
     ...config,
-    method: config.model === "first" ? "explicit-euler-substeps-tau-quarter" :
-      config.model === "second" ? "semi-implicit-euler-substeps-conservative" : "disabled",
+    method: config.model === "first" ? "explicit-euler-substeps-tau-quarter" : "disabled",
     version: 1
   };
 }
@@ -211,7 +214,8 @@ function recognizeMotion(res){
         filteredFrame: res.filteredFrame
       }, "static");
     const staticReference = $("evaluationReference").value || staticMain?.label;
-    const staticExamples = state.samples.filter(example => example.l === staticReference);
+    const staticExamples = state.samples.filter(example =>
+      example.l === staticReference && isSampleRecognizable(example, state.userId));
     updateComparison({
       kind: "static", detected: true, rawPrediction: staticRaw,
       filteredPrediction: staticFiltered,
@@ -226,7 +230,7 @@ function recognizeMotion(res){
     motion.frames = motion.frames.slice(-10);
     const tail = motion.frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
     const quiet = tail.length >= 8 && state.motions.every(sample => {
-      if (sample.syncStatus === "pending") return true;
+      if (!isSampleRecognizable(sample, state.userId)) return true;
       const required = sample.components || {
         left: sample.captureMeta?.handedness
           ? sample.captureMeta.handedness === "Left" : res.hand === "Left",
@@ -257,7 +261,7 @@ function recognizeMotion(res){
   }
   const rawFrames = frames.map(frame => ({ ...frame.rawFrame, time: frame.time }));
   const motionAnalyses = state.motions
-    .filter(sample => sample.syncStatus !== "pending")
+    .filter(sample => isSampleRecognizable(sample, state.userId))
     .map(sample => {
       const required = sample.components || {
         left: sample.captureMeta?.handedness
@@ -303,11 +307,17 @@ function recognizeMotion(res){
       const filteredMotion = classifyFrame(query, "filtered", "motion");
       const motionMain = selectActivePrediction(filteredMotion);
       const selected = selectUnifiedPrediction(staticMain, motionMain);
+      const motionAvailability = recognition.referenceAvailability(query, "motion");
       const { rawDistances, filteredDistances } = recognition.pairedHolisticDistances(query, "motion");
       const reference = $("evaluationReference").value || selected?.label;
-      const examples = state.motions.filter(example => example.l === reference);
+      const examples = state.motions.filter(example =>
+        example.l === reference && isSampleRecognizable(example, state.userId));
       updateComparison({
-        kind: "motion", detected: true, rawPrediction: rawMotion,
+        kind: "motion",
+        detected: motionAvailability.available && motionAvailability.compatible,
+        reason: motionAvailability.available && motionAvailability.compatible
+          ? undefined : motionAvailability.message,
+        rawPrediction: rawMotion,
         filteredPrediction: filteredMotion, rawDistances, filteredDistances,
         hasReference: examples.length > 0,
         legacyReference: examples.some(example => !example.components),
@@ -323,9 +333,10 @@ function recognizeMotion(res){
         showLocked(selected.label, `${selected.src || "seña guardada"}${score}`, true);
         addToPhrase(selected.label, generation);
       } else {
-        signEl.textContent = "Movimiento completo sin coincidencia";
+        showRecognitionMessage(motionAvailability.available && motionAvailability.compatible
+          ? "Movimiento completo sin coincidencia"
+          : motionAvailability.message);
         signEl.className = "sign idle";
-        metaEl.textContent = "";
       }
       motion.armed = false;
       motion.segmentActive = false;
@@ -348,7 +359,10 @@ function recognizeMotion(res){
   }
   ui.stability(staticMain, evaluationTime, generation);
   if (performance.now() >= state.readoutLock){
-    signEl.textContent = staticMain?.label || "Esperando una seña";
+    const availability = recognition.referenceAvailability(res.filteredFrame, "static");
+    signEl.textContent = staticMain?.label ||
+      (!availability.available || !availability.compatible
+        ? availability.message : "Esperando una seña");
     signEl.className = staticMain?.label ? "sign" : "sign idle";
     metaEl.textContent = staticMain?.src || "";
   }

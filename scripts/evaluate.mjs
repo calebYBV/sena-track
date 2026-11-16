@@ -67,6 +67,9 @@ if (unknownOptions.length){
       if (!sample.components || sample.source !== "paired-raw-and-filtered-v2"){
         throw new TypeError("Las referencias deben ser capturas holísticas v2 con cuadros raw reprocesables.");
       }
+      // An explicitly supplied, validated CLI reference is a trusted offline
+      // test fixture, not an account-scoped Supabase record.
+      sample.syncStatus = "saved";
     }
     for (const sample of validation) validateEvaluationCapture(sample);
     for (const sample of evaluation) validateEvaluationCapture(sample);
@@ -89,48 +92,50 @@ if (unknownOptions.length){
         video: { videoWidth: aspectRatio * 480, videoHeight: 480 }
       }
     });
-    const models = [
-      { ...DEFAULT_FILTER_CONFIG, id: "off", model: "off" },
-      { id: "first", ...DEFAULT_FILTER_CONFIG, model: "first" },
-      { id: "second", ...DEFAULT_FILTER_CONFIG, model: "second" }
-    ];
+    const baselineModel = {
+      ...DEFAULT_FILTER_CONFIG, id: "mediapipe-original", model: "off"
+    };
+    const defaultFilterModel = {
+      ...DEFAULT_FILTER_CONFIG, id: "edo-first-order", model: "first"
+    };
+    const models = [baselineModel, defaultFilterModel];
     const filterCandidates = validationFile.filterCandidates ?? [];
     if (!Array.isArray(filterCandidates)){
       throw new TypeError("filterCandidates debe ser un arreglo de configuraciones definido en validación.");
     }
     for (const [index, candidate] of filterCandidates.entries()){
-      const allowedFields = new Set(["id", "model", "tau", "zeta", "omegaN"]);
+      if (candidate && typeof candidate === "object" &&
+          (candidate.model === "second" || "zeta" in candidate || "omegaN" in candidate)){
+        throw new TypeError(
+          `filterCandidates[${index}] usa parámetros de segundo orden no compatibles; define únicamente tau para el filtro de primer orden.`
+        );
+      }
+      const allowedFields = new Set(["id", "model", "tau"]);
       if (!candidate || typeof candidate !== "object" ||
           typeof candidate.id !== "string" || !candidate.id.trim() || candidate.id.length > 80 ||
-          ["off", "first", "second"].includes(candidate.id.trim()) ||
-          !["first", "second"].includes(candidate.model)){
-        throw new TypeError(`filterCandidates[${index}] requiere un id único y model "first" o "second".`);
+          ["mediapipe-original", "edo-first-order"].includes(candidate.id.trim()) ||
+          candidate.model !== undefined && candidate.model !== "first"){
+        throw new TypeError(`filterCandidates[${index}] requiere un id único y solo puede usar model "first".`);
       }
-      if (Object.keys(candidate).some(key => !allowedFields.has(key)) ||
-          candidate.model === "first" &&
-            (candidate.zeta !== undefined || candidate.omegaN !== undefined) ||
-          candidate.model === "second" && candidate.tau !== undefined){
-        throw new TypeError(`filterCandidates[${index}] incluye parámetros que no corresponden al modelo seleccionado.`);
+      if (Object.keys(candidate).some(key => !allowedFields.has(key))){
+        throw new TypeError(`filterCandidates[${index}] solo admite id, model y tau.`);
       }
-      const config = { ...DEFAULT_FILTER_CONFIG, ...candidate };
       if (candidate.tau !== undefined &&
           (!Number.isFinite(candidate.tau) || candidate.tau < 0.01 || candidate.tau > 0.3)){
         throw new RangeError(`filterCandidates[${index}].tau debe estar entre 0.01 y 0.3 segundos.`);
       }
-      if (candidate.zeta !== undefined &&
-          (!Number.isFinite(candidate.zeta) || candidate.zeta < 0.2 || candidate.zeta > 2)){
-        throw new RangeError(`filterCandidates[${index}].zeta debe estar entre 0.2 y 2.`);
-      }
-      if (candidate.omegaN !== undefined &&
-          (!Number.isFinite(candidate.omegaN) || candidate.omegaN < 2 || candidate.omegaN > 30)){
-        throw new RangeError(`filterCandidates[${index}].omegaN debe estar entre 2 y 30 rad/s.`);
-      }
       if (models.some(model => model.id === candidate.id.trim())){
         throw new Error(`El modelo ${candidate.id.trim()} está duplicado.`);
       }
-      models.push({ ...config, id: candidate.id.trim() });
+      models.push({
+        ...DEFAULT_FILTER_CONFIG,
+        id: candidate.id.trim(),
+        model: "first",
+        tau: candidate.tau ?? DEFAULT_FILTER_CONFIG.tau
+      });
     }
-    const evaluateRecords = records => evaluateModels(records, models, (record, model) => {
+    const evaluateRecords = (records, candidateModels) =>
+      evaluateModels(records, candidateModels, (record, model) => {
           state.filterConfig = normalizeFilterConfig({ ...DEFAULT_FILTER_CONFIG, ...model });
           recognition.prepareFilteredReferences(state.filterConfig);
           const start = performance.now();
@@ -152,10 +157,11 @@ if (unknownOptions.length){
         });
     const componentName = components => ["left", "right", "face"]
       .filter(name => components[name]).join("+");
-    const evaluatePartition = records => {
+    const evaluatePartition = (records, candidateModels) => {
       const byKind = Object.fromEntries(["static", "motion"].map(kind => {
         const matchingRecords = records.filter(record => record.kind === kind);
-        return [kind, matchingRecords.length ? evaluateRecords(matchingRecords) : null];
+        return [kind, matchingRecords.length
+          ? evaluateRecords(matchingRecords, candidateModels) : null];
       }));
       const groups = new Map();
       for (const record of records){
@@ -165,9 +171,20 @@ if (unknownOptions.length){
       }
       const byKindAndComponents = Object.fromEntries([...groups]
         .sort(([first], [second]) => first.localeCompare(second))
-        .map(([key, matchingRecords]) => [key, evaluateRecords(matchingRecords)]));
+        .map(([key, matchingRecords]) =>
+          [key, evaluateRecords(matchingRecords, candidateModels)]));
       return { metricsByKind: byKind, metricsByKindAndComponents: byKindAndComponents };
     };
+    const validationOverall = evaluateRecords(validation, models);
+    const selectedFilter = models.slice(1).reduce((selected, candidate) => {
+      const currentMetrics = validationOverall[candidate.id];
+      const selectedMetrics = validationOverall[selected.id];
+      return currentMetrics.macroF1 > selectedMetrics.macroF1 ||
+          currentMetrics.macroF1 === selectedMetrics.macroF1 &&
+            currentMetrics.accuracy > selectedMetrics.accuracy
+        ? candidate : selected;
+    }, defaultFilterModel);
+    const testModels = [baselineModel, selectedFilter];
     const limitations = [];
     if (!split.sessionSeparationChecked){
       limitations.push("No se pudo verificar la independencia por sesión: faltan participantId o sessionId en al menos una muestra.");
@@ -184,16 +201,23 @@ if (unknownOptions.length){
         test: evaluation.length
       },
       thresholds: { staticTolerance, motionTolerance, ambiguity: state.ambiguityConfig },
-      filterConfigurations: models.map(({ id, model, tau, zeta, omegaN }) =>
-        ({ id, model, tau, zeta, omegaN })),
+      filterConfigurations: models.map(({ id, model, tau }) => ({ id, model, tau })),
+      selectedFilterConfiguration: {
+        id: selectedFilter.id,
+        model: selectedFilter.model,
+        tau: selectedFilter.tau,
+        selectionMetric: "validation macro-F1",
+        validationMacroF1: validationOverall[selectedFilter.id].macroF1
+      },
       split,
       validation: {
         classes: [...new Set(validation.map(sample => sample.truth))].sort(),
-        ...evaluatePartition(validation)
+        overallMetrics: validationOverall,
+        ...evaluatePartition(validation, models)
       },
       test: {
         classes: [...new Set(evaluation.map(sample => sample.truth))].sort(),
-        ...evaluatePartition(evaluation)
+        ...evaluatePartition(evaluation, testModels)
       },
       latencyDefinitionByKind: {
         static: "Tiempo desde el primer cuadro de la captura hasta 15 predicciones estáticas consecutivas; no incluye inferencia MediaPipe ni garantiza que el primer cuadro coincida con el inicio real del gesto.",

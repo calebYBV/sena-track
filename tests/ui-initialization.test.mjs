@@ -61,8 +61,7 @@ function installUI(html){
   const elements = new Map(ids.map(id => [id, new FakeElement(id)]));
   const initialValues = {
     tol: "0.8", tolM: "0.7", dur: "2",
-    filterModel: "first", filterTau: "0.06", filterZeta: "0.9",
-    filterOmega: "14"
+    filterTau: "0.06"
   };
   for (const [id, value] of Object.entries(initialValues)) elements.get(id).value = value;
   elements.get("speechEnabled").checked = true;
@@ -94,12 +93,10 @@ function installUI(html){
     bannerBar: new FakeElement("bannerBar")
   };
   const state = {
-    samples: [{ l: "Hola" }],
-    motions: [{ l: "Adiós" }],
+    samples: [{ l: "Hola", syncStatus: "saved" }],
+    motions: [{ l: "Adiós", syncStatus: "saved" }],
     phrase: "",
-    filterConfig: {
-      model: "first", tau: 0.06, zeta: 0.9, omegaN: 14, compareVisual: false
-    },
+    filterConfig: { model: "first", tau: 0.06, compareVisual: false },
     ambiguityConfig: { absoluteMargin: 0.04, relativeMargin: 0.08 }
   };
   const ui = createUI({
@@ -288,4 +285,27 @@ test("all application module imports use one versioned import map, including laz
     }
     assert.doesNotMatch(source, /traceCoordinate/);
   }
+});
+
+test("comparison output distinguishes unavailable references from a distance rejection", async () => {
+  const html = await read("index.html");
+  const { elements, ui } = installUI(html);
+  elements.get("distanceReduction").parentElement = new FakeElement("distanceReductionParent");
+  ui.updateComparison({
+    detected: false,
+    reason: "No existen referencias utilizables; 2 muestra(s) siguen pendientes de subida."
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "Sin referencias utilizables");
+
+  ui.updateComparison({
+    detected: false,
+    reason: "No hay señas compatibles con los componentes detectados."
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "Sin señas compatibles");
+
+  ui.updateComparison({
+    detected: true,
+    filteredPrediction: null
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "No identificada");
 });

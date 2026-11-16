@@ -85,9 +85,10 @@ test("the interface has only translator and settings views with comparison contr
   assert.deepEqual(navigationViews, ["translator", "settings"]);
   assert.doesNotMatch(html, /recognitionModeEdo|recognitionModeMediaPipe|name="recognitionMode"/);
   assert.doesNotMatch(html, /EDO activada/);
-  assert.match(html, /id="filterModel"/);
-  assert.match(html, /<option value="first">Primer orden<\/option>/);
-  assert.match(html, /<option value="second">Segundo orden<\/option>/);
+  assert.doesNotMatch(html, /filterModel|filterZeta|filterOmega|secondEquation|secondCalculation/);
+  assert.match(html, /id="filterTau"/);
+  assert.match(html, /Filtro de primer orden/);
+  assert.match(html, /Euler explícito/);
   assert.doesNotMatch(html, /<option value="off">/);
   assert.match(html, /id="edoContents"/);
   assert.doesNotMatch(html, /id="traceCoordinate"/);

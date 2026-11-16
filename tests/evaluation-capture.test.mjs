@@ -36,7 +36,7 @@ test("labeled captures create compatible raw and EDO references without storing 
     captureId: "capture-1",
     participantId: "P01",
     sessionId: "S01"
-  }, recognition(), { ...DEFAULT_FILTER_CONFIG, model: "second" }, 4 / 3);
+  }, recognition(), { ...DEFAULT_FILTER_CONFIG }, 4 / 3);
 
   assert.equal(sample.truth, "A");
   assert.equal(sample.captureId, "capture-1");
