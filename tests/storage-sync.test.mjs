@@ -107,7 +107,12 @@ class Query {
     data: Array.isArray(result.data) ? result.data[0] || null : result.data
   })); }
   maybeSingle(){ return this.single(); }
-  then(resolve, reject){ return Promise.resolve(this.run()).then(resolve, reject); }
+  then(resolve, reject){
+    const gate = this.table === "signs" && this.action === "select"
+      ? this.database.signReadGate : null;
+    if (gate) this.database.signReadStarted?.();
+    return Promise.resolve(gate).then(() => this.run()).then(resolve, reject);
+  }
 
   rows(){
     if (this.table === "user_settings"){
@@ -495,4 +500,49 @@ test("a retry reuses an existing valid Storage capture without overwriting it", 
   assert.equal(harness.database.storageRemoveCalls, 0);
   assert.equal(harness.database.sign_samples.filter(sample =>
     sample.owner_id === "account-a").length, 2);
+});
+
+test("concurrent preference and capture writes preserve the pending sign snapshot", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  harness.database.failSettingsWrite = true;
+  harness.state.samples.push(staticSample("New Capture", 0.1));
+  const [captureResult, preferenceResult] = await Promise.all([
+    harness.storage.saveAll(),
+    harness.storage.savePreferences()
+  ]);
+  assert.equal(captureResult, false);
+  assert.equal(preferenceResult, false);
+  const cached = harness.indexedDB.records.get("account-a");
+  assert.equal(cached.pending, true);
+  assert.equal(cached.samples.length, 2);
+  assert.equal(cached.samples[1].l, "New Capture");
+  assert.equal(cached.samples[1].syncStatus, "pending");
+  assert.equal(cached.settingsPending, true);
+});
+
+test("an in-flight sync cannot replace a capture queued at a newer revision", async () => {
+  const harness = makeHarness();
+  await harness.storage.loadUserLibrary("account-a");
+  let releaseRead;
+  harness.database.signReadGate = new Promise(resolve => { releaseRead = resolve; });
+  let startedRead;
+  const started = new Promise(resolve => { startedRead = resolve; });
+  harness.database.signReadStarted = startedRead;
+
+  harness.state.samples.push(staticSample("First queued", 0.1));
+  const firstSave = harness.storage.saveAll();
+  await started;
+  harness.state.samples.push(staticSample("Second queued", 0.2));
+  const secondSave = harness.storage.saveAll();
+  releaseRead();
+  const results = await Promise.all([firstSave, secondSave]);
+  assert.deepEqual(results, [true, true]);
+  const cache = harness.indexedDB.records.get("account-a");
+  assert.equal(cache.pending, false);
+  assert.deepEqual(cache.samples.map(sample => sample.l),
+    ["A", "First queued", "Second queued"]);
+  assert.equal(harness.database.sign_samples.length, 3);
+  assert.equal(new Set(harness.database.sign_samples.map(row => row.client_id)).size, 3);
+  assert.equal(harness.database.storageRemoveCalls, 0);
 });
