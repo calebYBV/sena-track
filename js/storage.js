@@ -7,11 +7,15 @@ import {
   validateSample
 } from "./sampleFormat.js";
 import { isSampleRecognizable, restoreCachedSample } from "./sampleSync.js";
+import { createSampleBackup, mergeBackupCaptures, mergeLocalCaptures, readSampleBackup } from "./sampleBackup.js";
 import { getSupabaseClient } from "./supabaseClient.js";
+
+class SampleConflictError extends Error {}
 
 export function createStorage({
   state, dom, ui,
-  getSupabaseClientImpl = getSupabaseClient
+  getSupabaseClientImpl = getSupabaseClient,
+  confirmImpl = message => confirm(message)
 }){
   const { $, listEl } = dom;
   const { setNote, renderList, setSyncStatus, setSyncIssues } = ui;
@@ -24,6 +28,7 @@ export function createStorage({
   let userId = null;
   let lastLocalLibrary = null;
   let syncPromise = null;
+  let deletePromise = null;
   let syncRequested = false;
   let userLoadToken = 0;
   let cacheDatabasePromise = null;
@@ -48,14 +53,14 @@ export function createStorage({
         const library = parseLibrary(JSON.parse(localStorage.getItem(key)));
         if (library) return library;
       } catch (error){
-        console.warn(`No se pudo leer ${key} de localStorage.`, error);
+        console.warn(`No se pudo leer ${key} de localStorage.`);
       }
     }
     try {
       const old = JSON.parse(localStorage.getItem(OLD_KEY));
       if (Array.isArray(old)) return { s: old, m: [], filters: null };
     } catch (error){
-      console.warn(`No se pudo leer ${OLD_KEY} de localStorage.`, error);
+      console.warn(`No se pudo leer ${OLD_KEY} de localStorage.`);
     }
     return { s: [], m: [], filters: null };
   }
@@ -120,7 +125,7 @@ export function createStorage({
         return cache;
       }
     } catch (error){
-      console.error("No se pudo recuperar la copia local de la cuenta.", error);
+      console.error("No se pudo recuperar la copia local de la cuenta.");
       throw error;
     }
   }
@@ -196,21 +201,31 @@ export function createStorage({
     };
   }
 
-  async function readRemoteLibrary(client, id){
-    const { data: signs, error: signsError } = await client.from("signs")
-      .select("id,name,kind,sign_language,visibility")
-      .eq("owner_id", id);
-    if (signsError) throw new Error(`Lectura de señas en Supabase: ${signsError.message}`, { cause: signsError });
-    const signById = new Map(signs.map(sign => [sign.id, sign]));
-    const signIds = signs.map(sign => sign.id);
-    let records = [];
-    if (signIds.length){
-      const { data, error } = await client.from("sign_samples")
-        .select("id,owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path")
-        .eq("owner_id", id).in("sign_id", signIds);
-      if (error) throw new Error(`Lectura de muestras en Supabase: ${error.message}`, { cause: error });
-      records = data;
+  async function readPages(client, table, columns, id, operation){
+    const records = [];
+    let lastId = null;
+    for (;;){
+      let query = client.from(table).select(columns).eq("owner_id", id)
+        .order("id").limit(500);
+      if (lastId) query = query.gt("id", lastId);
+      const { data, error } = await query;
+      if (error) throw new Error(`${operation}: ${error.message}`, { cause: error });
+      if (!Array.isArray(data)) throw new Error(`${operation}: respuesta inválida.`);
+      if (!data.length) return records;
+      const nextId = data.at(-1).id;
+      if (!nextId || nextId === lastId) throw new Error(`${operation}: paginación inválida.`);
+      records.push(...data);
+      lastId = nextId;
     }
+  }
+
+  async function readRemoteLibrary(client, id){
+    const signs = await readPages(client, "signs", "id,name,kind,sign_language,visibility", id,
+      "Lectura de señas en Supabase");
+    const signById = new Map(signs.map(sign => [sign.id, sign]));
+    const records = await readPages(client, "sign_samples",
+      "id,owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,mediapipe_model,processing,handedness,coordinate_space,mirrored_display,image_width,image_height,captured_at,payload,storage_path",
+      id, "Lectura de muestras en Supabase");
 
     const samples = [], motions = [];
     const invalidReferences = [];
@@ -243,7 +258,7 @@ export function createStorage({
         try {
           payload = JSON.parse(await data.text());
         } catch (error){
-          invalidReferences.push(`El archivo ${record.storage_path} no contiene una muestra JSON válida: ${error.message}`);
+          invalidReferences.push(`El archivo ${record.storage_path} no contiene una muestra JSON válida.`);
           continue;
         }
       }
@@ -264,6 +279,11 @@ export function createStorage({
         validateSample(payload, sign.kind);
       } catch (error){
         invalidReferences.push(`La muestra ${record.id} no es válida: ${error.message}`);
+        continue;
+      }
+      if (payload.components &&
+          canonicalJson(payload.components) !== canonicalJson(record.required_components)){
+        invalidReferences.push(`La muestra ${record.id} tiene componentes incompatibles con sus metadatos remotos.`);
         continue;
       }
       persistedPayloads.set(record.client_id, persistedPayload);
@@ -304,7 +324,8 @@ export function createStorage({
     }
     return {
       samples, motions, settings: settingsError ? null : settings,
-      settingsError, invalidReferences, unavailableObjects, persistedPayloads, pending: false, pendingDeletes: []
+      settingsError, invalidReferences, unavailableObjects, persistedPayloads,
+      signs, records, pending: false, pendingDeletes: []
     };
   }
 
@@ -344,16 +365,28 @@ export function createStorage({
     details.push(...remote.invalidReferences.filter(message => !unavailableMessages.has(message)));
     details.push(...extraIssues);
     setSyncIssues?.(details);
+    return details;
   }
 
-  // Verify stored content before releasing a pending local capture for recognition.
+  function remoteMatchesLocal(local, kind, id, verified, record, sign, payload){
+    return (!local.verifiedUserId || local.verifiedUserId === id) &&
+      verified.kind === kind && verified.l === local.l &&
+      sign?.sign_language === (local.signLanguage || "LSC") &&
+      (!local.components || canonicalJson(local.components) === canonicalJson(record.required_components)) &&
+      (!Number.isInteger(local.captureMeta?.handCount) || local.captureMeta.handCount === record.hand_count) &&
+      (typeof local.captureMeta?.faceAvailable !== "boolean" ||
+        local.captureMeta.faceAvailable === record.face_available) &&
+      canonicalJson(payload) === canonicalJson(prepareSamplePayload(local, kind).payload);
+  }
+
   function mergeRemoteIntoState(remote, cache){
     const deleted = cache?.pendingDeletes || [];
     for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
       const byId = new Map(state[key].map((sample, i) => [sample.syncId, i]));
       const updated = [...state[key]];
       for (const verified of remote[key]){
-        if (deleted.some(item => item.kind === kind && item.name === verified.l)) continue;
+        if (deleted.some(item => item.kind === kind && item.name === verified.l &&
+            (!item.clientIds?.length || item.clientIds.includes(verified.syncId)))) continue;
         const index = byId.get(verified.syncId);
         if (index === undefined){
           byId.set(verified.syncId, updated.length);
@@ -364,8 +397,10 @@ export function createStorage({
         if (local.syncStatus !== "pending" || local.l !== verified.l) continue;
         try {
           const actual = remote.persistedPayloads.get(verified.syncId);
-          if (actual && canonicalJson(prepareSamplePayload(local, kind).payload) === canonicalJson(actual)){
-            updated[index] = verified;
+          const record = remote.records.find(item => item.client_id === verified.syncId);
+          const sign = record && remote.signs.find(item => item.id === record.sign_id);
+          if (actual && record && remoteMatchesLocal(local, kind, cache.userId, verified, record, sign, actual)){
+            updated[index] = { ...local, syncStatus: "saved", verifiedUserId: cache.userId };
           }
         } catch {
           // Keep the original local sample when the identity cannot be verified.
@@ -396,7 +431,7 @@ export function createStorage({
       cached = await readCache(id);
     } catch (error){
       cacheReadError = error;
-      console.error("No se pudo leer la copia local; se intentará cargar la biblioteca remota.", error);
+      console.error("No se pudo leer la copia local; se intentará cargar la biblioteca remota.");
     }
     const initialRevision = cached?.revision;
     if (cached?.pending){
@@ -406,7 +441,6 @@ export function createStorage({
       applySettings(cached.settings);
       setSyncStatus(pendingStatus(cached), "pending");
       renderList();
-      void flushPending();
       return { samples: state.samples, motions: state.motions, settings: cached.settings, pending: true };
     }
     setSyncStatus("Cargando biblioteca…", "loading");
@@ -424,7 +458,6 @@ export function createStorage({
         applySettings(newerCache.settings);
         setSyncStatus(pendingStatus(newerCache), "pending");
         renderList();
-        void flushPending();
         return { samples: state.samples, motions: state.motions, settings: newerCache.settings, pending: true };
       }
       if (cached){
@@ -466,13 +499,12 @@ export function createStorage({
               applySettings(latest.settings);
               setSyncStatus(pendingStatus(latest), "pending");
               renderList();
-              void flushPending();
               return { samples: state.samples, motions: state.motions, settings: latest.settings, pending: true };
             }
           }
         } catch (error){
           cacheWriteError = error;
-          console.error("La biblioteca se cargó, pero no se pudo guardar su caché local.", error);
+          console.error("La biblioteca se cargó, pero no se pudo guardar su caché local.");
         }
       }
       if (remote.invalidReferences.length){
@@ -496,7 +528,7 @@ export function createStorage({
       renderList();
       return { ...remote, settings: effectiveSettings };
     } catch (error){
-      console.error("No se pudo cargar la biblioteca de Supabase.", error);
+      console.error("No se pudo cargar la biblioteca de Supabase.");
       if (userId !== id || userLoadToken !== loadToken){
         return { samples: [], motions: [], loadError: error, cancelled: true };
       }
@@ -550,62 +582,35 @@ export function createStorage({
     return data.id;
   }
 
-  async function deleteRemoteSign(client, id, name, kind, clientIds = []){
+  async function deleteRemoteSign(client, id, name, kind, clientIds = [], checkCurrent = () => {}){
+    if (!clientIds.length || clientIds.some(clientId =>
+      typeof clientId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(clientId))){
+      throw new Error("La eliminación no tiene identificadores válidos; requiere revisión manual.");
+    }
     const { data: signs, error: signError } = await client.from("signs")
       .select("id").eq("owner_id", id).eq("name", name).eq("kind", kind);
     if (signError) throw signError;
-    if (!signs.length){
-      const storage = client.storage.from(BUCKET);
-      const orphanPaths = [];
-      for (const clientId of clientIds){
-        const path = `${id}/${clientId}.json`;
-        const { data: listed, error } = await storage.list(id, { search: `${clientId}.json`, limit: 10 });
-        if (error) throw error;
-        if (listed.some(item => item.name === `${clientId}.json`)) orphanPaths.push(path);
+    const signIds = new Set(signs.map(sign => sign.id));
+    const records = [];
+    for (const clientId of new Set(clientIds)){
+      const { data, error } = await client.from("sign_samples")
+        .select("id,owner_id,sign_id,client_id")
+        .eq("owner_id", id).eq("client_id", clientId).maybeSingle();
+      if (error) throw error;
+      if (!data || data.owner_id !== id || data.client_id !== clientId || !signIds.has(data.sign_id)){
+        throw new Error("No se pudo verificar una captura de la eliminación; se conservó la cola para revisión manual.");
       }
-      if (orphanPaths.length){
-        const { error } = await storage.remove(orphanPaths);
-        if (error) throw error;
-      }
-      return;
+      records.push(data);
     }
-    for (const sign of signs){
-      const { data: records, error: recordsError } = await client.from("sign_samples")
-        .select("client_id,storage_path").eq("sign_id", sign.id).not("storage_path", "is", null);
-      if (recordsError) throw recordsError;
-      const paths = new Set(records.map(record => record.storage_path));
-      for (const removed of clientIds){
-        const path = `${id}/${removed}.json`;
-        if (paths.has(path)) continue;
-        const { data: listed, error } = await client.storage.from(BUCKET)
-          .list(id, { search: `${removed}.json`, limit: 10 });
-        if (error) throw error;
-        if (listed.some(item => item.name === `${removed}.json`)) paths.add(path);
-      }
-      const restore = [];
-      for (const path of paths){
-        const { data, error } = await client.storage.from(BUCKET).download(path);
-        if (error) throw error;
-        restore.push({ path, blob: data });
-      }
-      if (restore.length){
-        const { error } = await client.storage.from(BUCKET).remove(restore.map(file => file.path));
-        if (error) throw error;
-      }
-      const { error: deleteError } = await client.from("signs").delete()
-        .eq("id", sign.id).eq("owner_id", id);
-      if (deleteError){
-        const rollbackErrors = [];
-        for (const file of restore){
-          const { error } = await client.storage.from(BUCKET).upload(file.path, file.blob, {
-            contentType: "application/json"
-          });
-          if (error) rollbackErrors.push(error.message);
-        }
-        if (rollbackErrors.length){
-          throw new Error(`No se pudo borrar la seña (${deleteError.message}) ni restaurar los archivos: ${rollbackErrors.join("; ")}`);
-        }
-        throw deleteError;
+    for (const record of records){
+      if (userId !== id) throw new Error("La cuenta cambió durante la eliminación.");
+      checkCurrent();
+      const { data, error } = await client.from("sign_samples").delete()
+        .eq("id", record.id).eq("owner_id", id).eq("sign_id", record.sign_id)
+        .eq("client_id", record.client_id).select("id");
+      if (error) throw error;
+      if (!Array.isArray(data) || data.length !== 1){
+        throw new Error("No se pudo confirmar la eliminación de una captura; se conservó la cola para revisión manual.");
       }
     }
   }
@@ -651,19 +656,20 @@ export function createStorage({
     } else {
       const path = `${id}/${clientId}.json`;
       const storage = client.storage.from(BUCKET);
-      const { data: objectList, error: listError } = await storage.list(id, { search: `${clientId}.json`, limit: 10 });
-      if (listError) throw new Error(`Consulta de Storage: ${listError.message}`, { cause: listError });
-      if (objectList.some(object => object.name === `${clientId}.json`)){
-        const { data: existingBlob, error } = await storage.download(path);
-        if (error) throw new Error(`Descarga de Storage: ${error.message}`, { cause: error });
+      const { data: existingBlob, error: downloadError } = await storage.download(path);
+      if (downloadError && String(downloadError.statusCode ?? downloadError.status) !== "404"){
+        throw new Error(`Descarga de Storage: ${downloadError.message}`, { cause: downloadError });
+      }
+      if (!downloadError && !existingBlob) throw new Error("Descarga de Storage: respuesta sin datos.");
+      if (existingBlob){
         let existingPayload;
         try {
           existingPayload = JSON.parse(await existingBlob.text());
         } catch (error){
-          throw new Error(`El archivo existente ${path} no se puede validar y se conservará: ${error.message}`);
+          throw new Error(`El archivo existente ${path} no es JSON válido y se conservará.`);
         }
-        if (JSON.stringify(existingPayload) !== JSON.stringify(payload)){
-          throw new Error(`Ya existe una captura diferente en ${path}; no se sobrescribió.`);
+        if (canonicalJson(existingPayload) !== canonicalJson(payload)){
+          throw new SampleConflictError(`Ya existe una captura diferente en ${path}; no se sobrescribió.`);
         }
       } else {
         const blob = new Blob([JSON.stringify(payload)], { type: "application/json" });
@@ -674,20 +680,34 @@ export function createStorage({
         ...metadata, payload: null, storage_path: path
       });
       if (insertError){
-        const { data: committed, error: verifyError } = await client.from("sign_samples")
-          .select("sign_id,storage_path").eq("owner_id", id).eq("client_id", clientId).maybeSingle();
-        if (verifyError){
-          throw new Error(`No se pudo confirmar el registro después del error de inserción (${insertError.message}): ${verifyError.message}. El reintento verificará esta muestra antes de duplicarla.`);
-        }
-        if (committed?.storage_path === path && committed.sign_id === signIdValue){
-          existingIds.add(clientId);
-          return;
-        }
-        if (committed){
-          throw new Error(`La captura ya existe con otra ruta de Storage (${insertError.message}); se conservaron ambos archivos y el reintento verificará el registro.`);
-        }
-        throw new Error(`No se pudo registrar la captura (${insertError.message}); se conservó el archivo ${path} para que el reintento no pierda los datos.`);
+        throw new Error(`No se pudo registrar la captura (${insertError.message}); se conservó el archivo ${path} y el reintento verificará el registro.`, { cause: insertError });
       }
+    }
+    const { data: committed, error: verifyError } = await client.from("sign_samples")
+      .select("owner_id,sign_id,client_id,format_version,required_components,hand_count,face_available,payload,storage_path")
+      .eq("owner_id", id).eq("client_id", clientId).maybeSingle();
+    if (verifyError) throw new Error(`Verificación de muestra en Supabase: ${verifyError.message}`, { cause: verifyError });
+    if (!committed || committed.owner_id !== id || committed.sign_id !== signIdValue ||
+        committed.client_id !== clientId || committed.format_version !== metadata.format_version ||
+        committed.hand_count !== metadata.hand_count || committed.face_available !== metadata.face_available ||
+        canonicalJson(committed.required_components) !== canonicalJson(metadata.required_components)){
+      throw new Error("No se pudo confirmar la identidad y los metadatos de la muestra remota.");
+    }
+    let persisted = committed.payload;
+    if (bytes > SAMPLE_STORAGE_THRESHOLD_BYTES){
+      const path = `${id}/${clientId}.json`;
+      if (committed.storage_path !== path || committed.payload !== null){
+        throw new Error("La ruta remota de la captura no coincide; se conservó la copia local.");
+      }
+      const { data, error } = await client.storage.from(BUCKET).download(path);
+      if (error || !data) throw new Error(`Verificación de Storage: ${error?.message || "sin datos"}`, { cause: error });
+      try { persisted = JSON.parse(await data.text()); }
+      catch { throw new Error("El archivo remoto no es JSON válido."); }
+    } else if (committed.storage_path !== null){
+      throw new Error("La muestra remota no contiene el payload esperado.");
+    }
+    if (canonicalJson(persisted) !== canonicalJson(payload)){
+      throw new Error("El contenido remoto no coincide con la copia local; se conservaron ambos datos.");
     }
     existingIds.add(clientId);
   }
@@ -733,27 +753,16 @@ export function createStorage({
     mergeRemoteIntoState(remote, latest);
     reportRemoteIssues(remote, latest, id);
     renderList();
-    const deferredDeletes = [];
     const syncIssues = [];
-    for (const removed of cache.pendingDeletes || []){
-      try {
-        await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds);
-      } catch (error){
-        deferredDeletes.push(removed);
-        syncIssues.push(`Eliminación en espera de «${removed.name}» (${removed.kind}): ${error.message}`);
-      }
+    if (cache.pendingDeletes?.length){
+      syncIssues.push("Hay eliminaciones pendientes. Para revisarlas y confirmarlas usa «Revisar eliminaciones»; Reintentar no las ejecuta.");
     }
     const verifiedByClientId = new Map(
       [...remote.samples, ...remote.motions].map(sample => [sample.syncId, sample])
     );
-    const { data: existingSigns, error: existingSignsError } = await client.from("signs")
-      .select("id,name,kind,sign_language").eq("owner_id", id);
-    if (existingSignsError) throw new Error(`Consulta de señas en Supabase: ${existingSignsError.message}`, { cause: existingSignsError });
-    const signCache = existingSigns;
-    const { data: existingSamples, error: existingSamplesError } = await client.from("sign_samples")
-      .select("client_id").eq("owner_id", id);
-    if (existingSamplesError) throw new Error(`Consulta de identificadores en Supabase: ${existingSamplesError.message}`, { cause: existingSamplesError });
-    const existingIds = new Set(existingSamples.map(sample => sample.client_id));
+    const signCache = remote.signs;
+    const existingIds = new Set(remote.records.map(sample => sample.client_id));
+    const recordByClientId = new Map(remote.records.map(record => [record.client_id, record]));
     const unavailableIds = new Set(remote.unavailableObjects.map(({ record }) => record.client_id));
     let blocked = 0;
     const all = [
@@ -768,17 +777,32 @@ export function createStorage({
       );
       let retrySnapshot = structuredClone(sample);
       try {
+        if (sample.verifiedUserId && sample.verifiedUserId !== id){
+          throw new SampleConflictError("La captura indica otra cuenta; se conserva sin sincronizar.");
+        }
+        try {
+          prepareSamplePayload(sample, kind);
+        } catch (error){
+          if (error instanceof TypeError || error instanceof RangeError){
+            throw new SampleConflictError(`Contenido incompatible: ${error.message}`, { cause: error });
+          }
+          throw error;
+        }
         const beforeId = structuredClone(sample);
         await ensureSampleId(sample);
         if (beforeId.syncId !== sample.syncId &&
             !await checkpointSample(cache, id, kind, beforeId, sample)) return false;
         retrySnapshot = structuredClone(sample);
+        if ((cache.pendingDeletes || []).some(item => item.clientIds?.includes(sample.syncId))){
+          throw new SampleConflictError("Esta captura también figura en una eliminación pendiente; se conserva hasta que se revise el conflicto.");
+        }
         const remotelyConfirmed = verifiedByClientId.get(sample.syncId);
         if (remotelyConfirmed){
-          const localPayload = prepareSamplePayload(sample, kind).payload;
-          if (remotelyConfirmed.kind !== kind || remotelyConfirmed.l !== sample.l ||
-              canonicalJson(remote.persistedPayloads.get(sample.syncId)) !== canonicalJson(localPayload)){
-            throw new Error(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la copia local; se conservaron ambos datos.`);
+          const record = recordByClientId.get(sample.syncId);
+          const remoteSign = signCache.find(sign => sign.id === record.sign_id);
+          if (!remoteMatchesLocal(sample, kind, id, remotelyConfirmed, record, remoteSign,
+            remote.persistedPayloads.get(sample.syncId))){
+            throw new SampleConflictError(`La captura ${sample.syncId} existe en Supabase, pero no coincide con la copia local; se conservaron ambos datos.`);
           }
         } else {
           if (existingIds.has(sample.syncId)){
@@ -786,7 +810,7 @@ export function createStorage({
               blocked++;
               continue;
             }
-            throw new Error(`La captura ${sample.syncId} existe en Supabase, pero su referencia no pudo validarse; se conservó la copia local.`);
+            throw new SampleConflictError(`La captura ${sample.syncId} existe en Supabase, pero su referencia no pudo validarse; se conservó la copia local.`);
           }
           const sign = { name: sample.l.trim(), kind, sign_language: sample.signLanguage || "LSC" };
           let signIdValue;
@@ -797,6 +821,11 @@ export function createStorage({
           }
           await uploadSample(client, id, signIdValue, sample, kind, existingIds);
           verifiedByClientId.set(sample.syncId, { ...sample, kind });
+          recordByClientId.set(sample.syncId, {
+            sign_id: signIdValue, required_components: sample.components,
+            hand_count: sample.captureMeta?.handCount,
+            face_available: sample.captureMeta?.faceAvailable
+          });
           remote.persistedPayloads.set(sample.syncId, prepareSamplePayload(sample, kind).payload);
         }
         const beforeConfirmation = structuredClone(sample);
@@ -812,7 +841,7 @@ export function createStorage({
         sample.syncStatus = "pending";
         blocked++;
         if (syncIssues.length < 25){
-          syncIssues.push(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}${errorDetails(error)}`);
+          syncIssues.push(`Muestra ${index + 1} de ${all.length} («${sample.l}»): ${error.message}${errorDetails(error)}. ${errorCategory(error)}`);
         }
       }
     }
@@ -828,14 +857,15 @@ export function createStorage({
       }
     }
     reportRemoteIssues(remote, cache, id, syncIssues);
-    return { blocked, deferredDeletes, invalidReferences: remote.invalidReferences.length, syncIssues };
+    return { blocked, invalidReferences: remote.invalidReferences.length, syncIssues };
   }
 
   function pendingStatus(cache){
     const samples = [...(cache.samples || []), ...(cache.motions || [])];
     const pendingSamples = samples.filter(sample => sample.syncStatus === "pending").length;
     const preferences = cache.settingsPending ? "preferencias pendientes" : "";
-    const deletions = cache.pendingDeletes?.length ? "eliminaciones pendientes" : "";
+    const deletions = cache.pendingDeletes?.length
+      ? `${cache.pendingDeletes.length} eliminación(es) pendientes de confirmación separada` : "";
     const details = [
       pendingSamples ? `${pendingSamples} muestra(s) pendiente(s) de subida` : "",
       preferences,
@@ -848,14 +878,29 @@ export function createStorage({
   function errorDetails(error){
     const details = [];
     for (let current = error; current; current = current.cause){
-      for (const [label, value] of [["código", current.code], ["HTTP", current.status], ["detalle", current.details], ["pista", current.hint]]){
+      for (const [label, value] of [["código", current.code], ["HTTP", current.status]]){
         if (value && !details.includes(`${label}: ${value}`)) details.push(`${label}: ${value}`);
       }
     }
     return details.length ? ` (${details.join("; ")})` : "";
   }
 
+  function errorCategory(error){
+    for (let current = error; current; current = current.cause){
+      if (current.status === 401) return "Autenticación: revisa la sesión.";
+      if (current.status === 403 || current.code === "42501") return "Permisos: revisa RLS y Storage.";
+      if (["42P01", "42703", "PGRST204", "23514"].includes(current.code)) return "Esquema: comprueba las migraciones y restricciones.";
+      if (current.code === "23505" || current.status === 409) return "Conflicto: revisa el identificador y el contenido remoto.";
+      if (/network|fetch|connection|conexión|offline/i.test(current.message || "")) return "Conectividad: comprueba la red y reintenta.";
+    }
+    return "Revisa los detalles de la operación y reintenta.";
+  }
+
   async function flushPending(){
+    if (deletePromise){
+      setSyncStatus("Espera a que termine la revisión de eliminaciones antes de sincronizar.", "pending");
+      return false;
+    }
     if (syncPromise){
       syncRequested = true;
       return syncPromise;
@@ -868,7 +913,13 @@ export function createStorage({
       let unresolvedOperations = 0;
       let lastSyncIssues = [];
       let lastPendingStatus = "";
+      let passes = 0;
       do {
+        if (++passes > 5){
+          succeeded = false;
+          if (userId) setSyncStatus("La cola cambió repetidamente durante la sincronización. Las capturas se conservaron; cierra otras pestañas y pulsa Reintentar.", "pending");
+          break;
+        }
         syncRequested = false;
         const id = userId;
         let cache;
@@ -897,8 +948,7 @@ export function createStorage({
             if (remaining !== completed.blocked){
               throw new Error("Quedan muestras sin confirmar; se conserva la cola local.");
             }
-            cache.pendingDeletes = completed.deferredDeletes;
-            cache.pending = remaining > 0 || cache.pendingDeletes.length > 0;
+            cache.pending = remaining > 0 || Boolean(cache.pendingDeletes?.length);
             cache.settingsPending = false;
             cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
             await storeCache(cache, id);
@@ -911,18 +961,18 @@ export function createStorage({
           preferencesSynced ||= hadPendingSettings;
           lastSyncedUserId = id;
           unresolvedReferences = completed.invalidReferences;
-          unresolvedOperations = completed.blocked + completed.deferredDeletes.length;
+          unresolvedOperations = completed.blocked + (cache.pendingDeletes?.length || 0);
           lastSyncIssues = completed.syncIssues;
           lastPendingStatus = pendingStatus(cache);
         } catch (error){
           succeeded = false;
-          console.error("La sincronización con Supabase falló.", error);
+          console.error("La sincronización con Supabase falló; consulta el estado de sincronización.");
           let latest;
           try { latest = await readCache(id); } catch (storageError){
-            console.error("No se pudo comprobar la cola local tras el error de red.", storageError);
+            console.error("No se pudo comprobar la cola local tras el error de red.");
           }
           if (userId === id) setSyncStatus(
-            `Error de sincronización: ${error.message}${errorDetails(error)}. ${latest ? pendingStatus(latest) : "No se pudo comprobar la cola local."}`,
+            `Error de sincronización: ${error.message}${errorDetails(error)}. ${latest ? pendingStatus(latest) : "No se pudo comprobar la cola local."} ${errorCategory(error)}`,
             "error"
           );
           break;
@@ -950,8 +1000,19 @@ export function createStorage({
     if (!userId) return false;
     try {
       await updatePendingCache(cache => {
-        cache.samples = state.samples;
-        cache.motions = state.motions;
+        for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
+          for (const sample of state[key]){
+            if ((cache.pendingDeletes || []).some(item => item.kind === kind &&
+                (item.clientIds?.length ? item.clientIds.includes(sample.syncId) : item.name === sample.l))){
+              throw new Error("Una captura local coincide con una eliminación pendiente; conserva la sesión y revisa la cola antes de guardar.");
+            }
+          }
+        }
+        const merged = mergeLocalCaptures(cache, {
+          samples: state.samples, motions: state.motions
+        });
+        cache.samples = merged.samples;
+        cache.motions = merged.motions;
         cache.filters = state.filterConfig;
         cache.ambiguity = state.ambiguityConfig;
         cache.settings = readSettings();
@@ -1002,6 +1063,72 @@ export function createStorage({
     }
   }
 
+  async function reviewPendingDeletes(){
+    const id = userId;
+    $("syncDeletesStatus").textContent = "";
+    if (!id) throw new Error("Inicia sesión para revisar las eliminaciones.");
+    if (syncPromise || deletePromise) throw new Error("Espera a que termine la operación en curso.");
+    const cache = await readCache(id);
+    if (userId !== id) throw new Error("La cuenta cambió durante la revisión.");
+    const queued = structuredClone(cache?.pendingDeletes || []);
+    if (!queued.length){
+      $("syncDeletesStatus").textContent = "No hay eliminaciones pendientes.";
+      return false;
+    }
+    const summary = queued.map(item =>
+      `• ${item.name} (${item.kind}): ${item.clientIds?.length || 0} captura(s)`).join("\n");
+    if (!confirmImpl(`Se eliminarán únicamente los registros remotos identificados abajo. Esta acción es irreversible; los objetos de Storage se conservarán. El reintento general no ejecuta estas eliminaciones.\n\n${summary}\n\n¿Confirmas estas eliminaciones?`)){
+      return false;
+    }
+    if (userId !== id || syncPromise || deletePromise){
+      throw new Error("La cuenta o la sincronización cambió; revisa de nuevo las eliminaciones.");
+    }
+    deletePromise = withCacheWrite(async () => {
+      let latest = await readCache(id);
+      if (userId !== id || !latest || latest.revision !== cache.revision ||
+          canonicalJson(latest.pendingDeletes || []) !== canonicalJson(queued)){
+        throw new Error("La cola cambió; revisa de nuevo las eliminaciones.");
+      }
+      const client = await getSupabaseClientImpl();
+      for (const removed of queued){
+        const checkCurrent = () => {
+          if (userId !== id) throw new Error("La cuenta cambió durante la eliminación.");
+          const ids = new Set(removed.clientIds || []);
+          if ([...latest.samples, ...latest.motions, ...state.samples, ...state.motions]
+            .some(sample => ids.has(sample.syncId))){
+            throw new Error("Una captura local usa un identificador de esta eliminación; no se procesará.");
+          }
+        };
+        checkCurrent();
+        await deleteRemoteSign(client, id, removed.name, removed.kind, removed.clientIds, checkCurrent);
+        checkCurrent();
+        const index = latest.pendingDeletes.findIndex(item =>
+          canonicalJson(item) === canonicalJson(removed));
+        if (index < 0) throw new Error("La cola cambió durante la eliminación.");
+        latest.pendingDeletes.splice(index, 1);
+        latest.pending = Boolean(latest.pendingDeletes.length || latest.settingsPending ||
+          [...latest.samples, ...latest.motions].some(sample => sample.syncStatus === "pending"));
+        latest.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
+        await storeCache(latest, id);
+      }
+      return latest;
+    }).finally(() => { deletePromise = null; });
+    try {
+      const result = await deletePromise;
+      if (userId === id){
+        setSyncStatus(result.pending ? pendingStatus(result) :
+          "Eliminaciones confirmadas; los archivos de Storage se conservaron.", result.pending ? "pending" : "saved");
+      }
+      return true;
+    } catch (error){
+      if (userId === id) setSyncStatus(
+        `No se completaron las eliminaciones: ${error.message}${errorDetails(error)}. Algunos registros podrían haberse eliminado; revisa Supabase antes de volver a confirmar. Los archivos de Storage se conservaron.`,
+        "error"
+      );
+      return false;
+    }
+  }
+
   async function deleteSign(name, kind){
     const kinds = kind === "all" ? ["s", "m"] : [kind];
     const removedByKind = new Map([
@@ -1013,15 +1140,19 @@ export function createStorage({
         sampleKind, await Promise.all(examples.map(ensureSampleId))
       ])
     ));
-    const nextSamples = kinds.includes("s")
-      ? state.samples.filter(sample => sample.l !== name) : state.samples;
-    const nextMotions = kinds.includes("m")
-      ? state.motions.filter(sample => sample.l !== name) : state.motions;
     let cache;
     try {
       cache = await updatePendingCache(cache => {
-        cache.samples = nextSamples;
-        cache.motions = nextMotions;
+        const merged = mergeLocalCaptures(cache, { samples: state.samples, motions: state.motions });
+        for (const [key, sampleKind] of [["samples", "s"], ["motions", "m"]]){
+          if (kinds.includes(sampleKind) &&
+              merged[key].filter(sample => sample.l === name).length !==
+              state[key].filter(sample => sample.l === name).length){
+            throw new Error("La copia local contiene capturas adicionales para esta seña; no se retiró ninguna. Revisa las otras pestañas.");
+          }
+        }
+        cache.samples = kinds.includes("s") ? merged.samples.filter(sample => sample.l !== name) : merged.samples;
+        cache.motions = kinds.includes("m") ? merged.motions.filter(sample => sample.l !== name) : merged.motions;
         cache.pendingDeletes ||= [];
         for (const [sampleKind, clientIds] of clientIdsByKind){
           if (!clientIds.length) continue;
@@ -1121,7 +1252,7 @@ export function createStorage({
       try {
         await importLocalLibrary();
       } catch (error){
-        console.error("No se pudo importar la biblioteca local.", error);
+        console.error("No se pudo importar la biblioteca local.");
         setSyncStatus(`No se pudo preparar la importación: ${error.message}`, "error");
         setNote(`Importación incompleta: ${error.message}`);
       }
@@ -1129,6 +1260,106 @@ export function createStorage({
   });
 
   $("syncRetry").addEventListener("click", () => { void retrySync(); });
+  $("syncDeletes").addEventListener("click", () => {
+    void reviewPendingDeletes().catch(error =>
+      setSyncStatus(`No se pudieron revisar las eliminaciones: ${error.message}`, "error"));
+  });
+
+  async function exportBackup(){
+    const id = userId;
+    if (!id) throw new Error("Inicia sesión para respaldar la copia local.");
+    const cache = await withCacheWrite(() => readCache(id));
+    if (userId !== id) throw new Error("La cuenta cambió durante la exportación.");
+    if (!cache) throw new Error("No existe una copia local de esta cuenta en este navegador.");
+    const backup = await createSampleBackup(cache, id);
+    if (userId !== id) throw new Error("La cuenta cambió durante la exportación.");
+    return backup;
+  }
+
+  async function restoreBackup(backup){
+    const id = userId;
+    const saved = await readSampleBackup(backup, id);
+    const onAdd = sample => ["saved", "local"].includes(sample.syncStatus)
+      ? { ...sample, syncStatus: "unverified",
+        syncIssue: `El respaldo indicaba ${sample.syncStatus}; no se ha verificado con Supabase.` }
+      : sample;
+    const result = await withCacheWrite(async () => {
+      if (userId !== id) throw new Error("La cuenta cambió durante la restauración.");
+      const cache = await readCache(id);
+      if (userId !== id) throw new Error("La cuenta cambió durante la restauración.");
+      if (!cache) throw new Error("No existe una copia local de esta cuenta; carga primero la biblioteca.");
+      const merged = mergeBackupCaptures(cache, saved, { onAdd });
+      mergeBackupCaptures({ samples: state.samples, motions: state.motions,
+        pendingDeletes: cache.pendingDeletes }, saved, { onAdd });
+      if (!merged.added) return { cache, added: 0 };
+      const next = {
+        ...cache, samples: merged.samples, motions: merged.motions,
+        pending: cache.pending || [...merged.samples, ...merged.motions]
+          .some(sample => sample?.syncStatus === "pending"),
+        revision: (Number.isFinite(cache.revision) ? cache.revision : 0) + 1
+      };
+      await storeCache(next, id);
+      return { cache: next, added: merged.added };
+    });
+    if (userId === id){
+      try {
+        const live = mergeBackupCaptures({ samples: state.samples, motions: state.motions,
+          pendingDeletes: result.cache.pendingDeletes }, saved, { onAdd });
+        for (const [key, kind] of [["samples", "static"], ["motions", "motion"]]){
+          state[key] = [
+            ...state[key],
+            ...live[key].slice(state[key].length).map(sample => restoreCachedSample(sample, kind, {
+              ownerId: id, cacheUserId: id
+            }))
+          ];
+        }
+      } catch (error){
+        throw new Error(`El respaldo se guardó en IndexedDB, pero la biblioteca en pantalla cambió: ${error.message} No recargues hasta guardar cualquier captura nueva.`);
+      }
+      setSyncStatus(result.cache.pending ? pendingStatus(result.cache) : "Respaldo restaurado; revisa las capturas locales.",
+        result.cache.pending ? "pending" : "saved");
+      renderList();
+    }
+    return result.added;
+  }
+
+  $("btnBackup").onclick = async () => {
+    $("backupSummary").textContent = "";
+    try {
+      const backup = await exportBackup();
+      const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = "sena-track-respaldo-privado.json";
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const standard = ["saved", "local", "pending", "invalid", "unverified"];
+      const statuses = [...standard, ...Object.keys(backup.counts).filter(status => !standard.includes(status))];
+      $("backupSummary").textContent = `Respaldo local (solo IndexedDB). Estados: ${statuses
+        .map(status => `${status}: ${backup.counts[status] || 0}`).join(" · ")}. Verifica que se haya descargado el archivo privado.`;
+    } catch (error){
+      setSyncStatus(`No se pudo crear el respaldo: ${error.message}`, "error");
+    }
+  };
+  $("btnRestoreBackup").onclick = () => $("backupFile").click();
+  $("backupFile").onchange = async event => {
+    try {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      let backup;
+      try { backup = JSON.parse(await file.text()); }
+      catch { throw new Error("El archivo de respaldo no es JSON válido."); }
+      await readSampleBackup(backup, userId);
+      if (!confirm("El respaldo contiene datos privados. Se añadirán únicamente capturas ausentes de esta misma cuenta, sin sobrescribir las existentes. Las pendientes podrán sincronizarse después. ¿Continuar?")) return;
+      const added = await restoreBackup(backup);
+      $("backupSummary").textContent = `Respaldo comprobado: ${added} captura(s) restaurada(s). Revisa la cola antes de reintentar.`;
+    } catch (error){
+      setSyncStatus(`No se pudo restaurar el respaldo: ${error.message}`, "error");
+    } finally {
+      event.target.value = "";
+    }
+  };
 
   const exportButton = $("btnExport");
   exportButton.onclick = () => {
@@ -1157,14 +1388,14 @@ export function createStorage({
       for (const sample of library.m) prepareSamplePayload(sample, "motion");
       await importLibrary(library);
     } catch (error){
-      console.error("No se pudo importar la biblioteca JSON.", error);
+      console.error("No se pudo importar la biblioteca JSON.");
       alert(`No se pudo importar el archivo: ${error.message}`);
     } finally {
       event.target.value = "";
     }
   };
   $("btnReset").onclick = async () => {
-    if (!confirm("¿Borrar todas las señas de esta cuenta? Esta acción se sincroniza con Supabase.")) return;
+    if (!confirm("Se retirarán todas las capturas locales, incluidas las pendientes. Crea antes un respaldo privado. Las eliminaciones remotas requerirán una confirmación separada. ¿Continuar?")) return;
     try {
       const names = new Map();
       for (const sample of state.samples){
@@ -1180,6 +1411,10 @@ export function createStorage({
         names.set(key, group);
       }
       await updatePendingCache(cache => {
+        const merged = mergeLocalCaptures(cache, { samples: state.samples, motions: state.motions });
+        if (merged.samples.length !== state.samples.length || merged.motions.length !== state.motions.length){
+          throw new Error("La copia local contiene capturas adicionales; no se retiró ninguna. Revisa las otras pestañas.");
+        }
         cache.samples = [];
         cache.motions = [];
         cache.pendingDeletes = [...(cache.pendingDeletes || []), ...[...names.values()].map(({ name, kind, clientIds }) => ({
@@ -1189,7 +1424,7 @@ export function createStorage({
       state.samples = [];
       state.motions = [];
     } catch (error){
-      console.error("No se pudo preparar el borrado de la biblioteca.", error);
+      console.error("No se pudo preparar el borrado de la biblioteca.");
       setSyncStatus(`No se pudo guardar la cola local: ${error.message}`, "error");
       return;
     }
@@ -1205,11 +1440,16 @@ export function createStorage({
     deleteSign,
     importLibrary,
     importLocalLibrary,
+    exportBackup,
+    restoreBackup,
+    reviewPendingDeletes,
     retrySync,
     clearUser(){
       userId = null;
       syncRequested = false;
       userLoadToken++;
+      $("backupSummary").textContent = "";
+      $("syncDeletesStatus").textContent = "";
       setSyncIssues?.([]);
       state.samples = [];
       state.motions = [];
