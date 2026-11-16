@@ -67,6 +67,9 @@ if (unknownOptions.length){
       if (!sample.components || sample.source !== "paired-raw-and-filtered-v2"){
         throw new TypeError("Las referencias deben ser capturas holísticas v2 con cuadros raw reprocesables.");
       }
+      // An explicitly supplied, validated CLI reference is a trusted offline
+      // test fixture, not an account-scoped Supabase record.
+      sample.syncStatus = "saved";
     }
     for (const sample of validation) validateEvaluationCapture(sample);
     for (const sample of evaluation) validateEvaluationCapture(sample);

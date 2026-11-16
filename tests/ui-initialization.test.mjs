@@ -94,8 +94,8 @@ function installUI(html){
     bannerBar: new FakeElement("bannerBar")
   };
   const state = {
-    samples: [{ l: "Hola" }],
-    motions: [{ l: "Adiós" }],
+    samples: [{ l: "Hola", syncStatus: "saved" }],
+    motions: [{ l: "Adiós", syncStatus: "saved" }],
     phrase: "",
     filterConfig: {
       model: "first", tau: 0.06, zeta: 0.9, omegaN: 14, compareVisual: false
