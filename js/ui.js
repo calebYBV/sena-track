@@ -120,6 +120,11 @@ function setSyncStatus(text, status = "saved"){
   $("syncRetry").hidden = status !== "error" && status !== "pending";
 }
 
+function setSyncIssues(issues){
+  $("syncIssues").hidden = !issues.length;
+  $("syncIssuesText").textContent = issues.join("\n\n");
+}
+
 function stability(r, timestamp = performance.now(), generation = state.recognitionGeneration){
   if (!isCurrentRecognitionResult(state, generation)) return;
   if (!state.recognitionEnabled) return;
@@ -579,6 +584,6 @@ function showRecognitionMessage(message){
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls,
+  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, setSyncIssues, clearForUser, refreshGeneralControls,
   refreshAmbiguityControls, showRecognitionMessage };
 }

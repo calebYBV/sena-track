@@ -314,3 +314,12 @@ una denegación de permisos, una interrupción de red, una inserción y un error
 Storage requieren comprobaciones distintas. No borres IndexedDB ni localStorage
 para resolverlo. Evita editar la biblioteca simultáneamente en varias pestañas;
 la coordinación de escrituras de la caché es por instancia de la aplicación.
+
+Si un objeto de Storage no se puede descargar, la biblioteca carga las demás
+referencias y muestra cada registro afectado en los detalles de sincronización.
+El informe compara metadatos y datos originales locales válidos por cuenta,
+identificador, seña, tipo y ruta; una coincidencia es solo una posible copia,
+no una prueba de que sea idéntica al archivo inaccesible. No se restaura ni
+sobrescribe automáticamente ningún objeto. Conserva la caché y consulta los
+detalles antes de solicitar una recuperación manual autorizada. Un fallo de
+descarga también puede deberse a red o permisos, no necesariamente a ausencia.

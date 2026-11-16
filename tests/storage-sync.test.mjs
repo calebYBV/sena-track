@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { createRecognition } from "../js/recognition.js";
 import { createStorage } from "../js/storage.js";
+import { prepareSamplePayload } from "../js/sampleFormat.js";
 
 globalThis.crypto ||= webcrypto;
 
@@ -219,10 +220,13 @@ function makeClient(database){
     storage: {
       from: () => ({
         async download(path){
+          if (database.downloadErrors?.has(path)){
+            return { data: null, error: database.downloadErrors.get(path) };
+          }
           const blob = database.files.get(path);
           return blob
             ? { data: blob, error: null }
-            : { data: null, error: new Error("Storage object missing") };
+            : { data: null, error: new Error("Object not found") };
         },
         async list(folder, { search } = {}){
           const names = [...database.files.keys()]
@@ -297,10 +301,12 @@ function makeHarness({
     ambiguityConfig: { absoluteMargin: 0.04, relativeMargin: 0.08 }
   };
   const statuses = [];
+  const issues = [];
   const ui = {
     setNote(){},
     renderList(){},
     setSyncStatus(text, status){ statuses.push({ text, status }); },
+    setSyncIssues(details){ issues.push(details); },
     refreshAmbiguityControls(){},
     refreshFilterControls(){},
     refreshGeneralControls(){}
@@ -311,7 +317,7 @@ function makeHarness({
     ui,
     getSupabaseClientImpl: async () => makeClient(database)
   });
-  return { state, storage, statuses, database, indexedDB };
+  return { state, storage, statuses, issues, database, indexedDB };
 }
 
 function recognitionFor(state){
@@ -327,6 +333,172 @@ function deferred(){
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
+
+function motionSample(clientId){
+  return {
+    l: "Saludos", kind: "motion", formatVersion: 2, syncId: clientId,
+    s: Array.from({ length: 24 }, () => Array(65).fill(0.1)),
+    rawFrames: Array.from({ length: 8 }, (_, i) => ({
+      lm: Array.from({ length: 21 }, () => [0.1, 0.2, 0.3]),
+      hand: "Left", time: i * 33
+    })),
+    syncStatus: "pending"
+  };
+}
+
+function incidentDatabase(){
+  const database = makeDatabase();
+  database.signs.push({ ...remoteSign("account-a", "sign-motion", "Saludos"), kind: "motion" });
+  database.sign_samples.push(remoteSample("account-a", "sign-a", "inline-2"));
+  for (let i = 0; i < 171; i++){
+    const record = remoteSample("account-a", "sign-a", `available-${i}`);
+    record.storage_path = `account-a/available-${i}.json`;
+    database.files.set(record.storage_path, new Blob([JSON.stringify(record.payload)]));
+    record.payload = null;
+    database.sign_samples.push(record);
+  }
+  for (let i = 0; i < 17; i++){
+    const record = remoteSample("account-a", "sign-motion", `missing-${i}`);
+    record.format_version = 2;
+    record.payload = null;
+    record.storage_path = `account-a/missing-${i}.json`;
+    database.sign_samples.push(record);
+  }
+  return database;
+}
+
+test("17 unavailable motion objects do not block 173 valid references or destroy cached captures", async () => {
+  const database = incidentDatabase();
+  const indexedDB = new MemoryIndexedDB();
+  const local = motionSample("missing-0");
+  local.syncStatus = "saved";
+  local.verifiedUserId = "account-a";
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: false,
+    samples: [], motions: [local], pendingDeletes: []
+  });
+  const before = structuredClone(indexedDB.records.get("account-a"));
+  const harness = makeHarness({ database, indexedDB });
+  const result = await harness.storage.loadUserLibrary("account-a");
+
+  assert.equal(database.sign_samples.length, 190);
+  assert.equal(result.invalidReferences.length, 17);
+  assert.equal(result.samples.length, 173);
+  assert.equal(harness.state.samples.length, 173);
+  assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+  assert.deepEqual(indexedDB.records.get("account-a"), before);
+  assert.equal(harness.state.motions[0].syncStatus, "local");
+  assert.equal(harness.issues.at(-1).length, 17);
+  assert.match(harness.issues.at(-1)[0], /missing-0.*Posible copia local completa/);
+  assert.match(harness.issues.at(-1)[1], /missing-1.*No se encontró una copia local/);
+  assert.match(harness.statuses.at(-1).text, /17 referencia/);
+  assert.equal(await harness.storage.retrySync(), false);
+  assert.deepEqual(indexedDB.records.get("account-a"), before);
+  assert.equal(database.storageRemoveCalls, 0);
+});
+
+test("pending queue skips missing objects, syncs other captures and reconciles a partial manual recovery", async () => {
+  const database = incidentDatabase();
+  const indexedDB = new MemoryIndexedDB();
+  const local = motionSample("missing-0");
+  const otherPending = Array.from({ length: 162 }, (_, i) =>
+    staticSample("Carga", 0.1 + i / 10000));
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: true,
+    samples: otherPending, motions: [local], pendingDeletes: []
+  });
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.equal(await harness.storage.retrySync(), false);
+  const cache = indexedDB.records.get("account-a");
+  assert.equal(cache.samples.filter(sample => sample.syncStatus === "saved").length, 162);
+  assert.equal(cache.motions[0].syncStatus, "pending");
+  assert.deepEqual(cache.motions[0].rawFrames, local.rawFrames);
+  assert.equal(harness.state.samples.length, 335);
+  assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+  assert.equal(database.sign_samples.length, 352);
+  assert.equal(database.files.size, 171);
+  assert.equal(harness.issues.at(-1).length, 17);
+  assert.equal(database.storageRemoveCalls, 0);
+
+  const path = "account-a/missing-0.json";
+  database.files.set(path, new Blob([JSON.stringify(prepareSamplePayload(local, "motion").payload)]));
+  const file = await database.files.get(path).text();
+  assert.equal(await harness.storage.retrySync(), false);
+  assert.equal(indexedDB.records.get("account-a").motions[0].syncStatus, "saved");
+  assert.equal(harness.issues.at(-1).length, 16);
+  assert.equal(await database.files.get(path).text(), file);
+  assert.equal(database.sign_samples.length, 352);
+  assert.equal(database.storageRemoveCalls, 0);
+});
+
+test("failed downloads report their actual cause and reject mismatched local candidates", async () => {
+  const database = incidentDatabase();
+  const indexedDB = new MemoryIndexedDB();
+  const local = motionSample("missing-0");
+  local.verifiedUserId = "account-b";
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: false,
+    samples: [], motions: [local], pendingDeletes: []
+  });
+  database.downloadErrors = new Map([
+    ["account-a/missing-0.json", new Error("permission denied")]
+  ]);
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.match(harness.issues.at(-1)[0], /permission denied.*No se encontró una copia local/);
+  assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+});
+
+test("recovery candidates require matching kind, route, format and complete valid coordinates", async () => {
+  const database = incidentDatabase();
+  const indexedDB = new MemoryIndexedDB();
+  const candidates = Array.from({ length: 5 }, (_, i) => motionSample(`missing-${i}`));
+  candidates[0].kind = "static";
+  database.sign_samples.find(row => row.client_id === "missing-1").storage_path = "account-a/other.json";
+  candidates[2].formatVersion = 1;
+  candidates[3].rawFrames[0].lm = [];
+  delete candidates[4].rawFrames;
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: false,
+    samples: [], motions: candidates, pendingDeletes: []
+  });
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  for (const detail of harness.issues.at(-1).slice(0, 5)){
+    assert.match(detail, /No se encontró una copia local completa coincidente/);
+  }
+  assert.equal(database.files.size, 171);
+  assert.equal(database.storageRemoveCalls, 0);
+});
+
+test("loading an accessible object does not overwrite a different local capture with the same id", async () => {
+  const database = makeDatabase();
+  database.signs.push({ ...remoteSign("account-a", "sign-motion", "Saludos"), kind: "motion" });
+  const local = motionSample("capture-motion");
+  local.syncStatus = "saved";
+  local.verifiedUserId = "account-a";
+  const remote = motionSample("capture-motion");
+  remote.rawFrames[0].lm[0][0] = 0.9;
+  const path = "account-a/capture-motion.json";
+  database.files.set(path, new Blob([JSON.stringify(prepareSamplePayload(remote, "motion").payload)]));
+  const record = remoteSample("account-a", "sign-motion", "capture-motion");
+  record.format_version = 2;
+  record.payload = null;
+  record.storage_path = path;
+  database.sign_samples.push(record);
+  const indexedDB = new MemoryIndexedDB();
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, revision: 1, pending: false,
+    samples: [], motions: [local], pendingDeletes: []
+  });
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.deepEqual(indexedDB.records.get("account-a").motions[0], local);
+  assert.equal(harness.state.motions[0].rawFrames[0].lm[0][0], 0.1);
+  assert.equal(await harness.storage.savePreferences(), true);
+  assert.deepEqual(indexedDB.records.get("account-a").motions[0].rawFrames, local.rawFrames);
+});
 
 test("confirmed Supabase samples are restored as recognized references", async () => {
   const harness = makeHarness();
@@ -521,7 +693,7 @@ test("corrupt remote references are reported and skipped without losing valid ca
   assert.equal(harness.state.samples.length, 1);
   assert.equal(harness.state.samples[0].l, "A");
   assert.equal(result.invalidReferences.length, 1);
-  assert.match(harness.statuses.at(-1).text, /referencia\(s\) inválida\(s\)/);
+  assert.match(harness.statuses.at(-1).text, /referencia\(s\) remota\(s\) no disponibles o inválidas/);
 });
 
 test("successful retries do not duplicate signs or captures", async () => {
