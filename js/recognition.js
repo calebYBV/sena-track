@@ -1,5 +1,6 @@
 import { addMotionTrajectory, extractHolisticFeatures, holisticDistance } from "./holistic.js";
 import { createEdoFilter, DEFAULT_FILTER_CONFIG, normalizeFilterConfig } from "./filters.js";
+import { isSampleRecognizable } from "./sampleSync.js";
 
 export function calculateDistanceReduction(rawDistance, filteredDistance){
   if (!Number.isFinite(rawDistance) || !Number.isFinite(filteredDistance) || rawDistance <= 1e-6) return null;
@@ -37,6 +38,7 @@ const MIN_MOTION_CONFIDENCE = 0.55;
 const filteredReferences = new WeakMap();
 const unreplayableReferences = new WeakSet();
 const failedReferenceReplays = new WeakSet();
+const referenceIssues = new WeakMap();
 let preparedModel = null, preparedTau = null, preparedZeta = null, preparedOmegaN = null;
 let preparedAspect = null;
 let preparedSamples = null, preparedMotions = null, preparedSampleCount = -1, preparedMotionCount = -1;
@@ -79,16 +81,31 @@ function canReplayReference(sample){
 }
 
 function regenerateReference(sample, config, aspect){
-  if (!canReplayReference(sample)) return null;
+  if (!canReplayReference(sample)){
+    return {
+      reference: null,
+      issue: "La referencia heredada no conserva cuadros raw suficientes para regenerarse con el filtro EDO actual."
+    };
+  }
   const frames = filterFrames(sample.rawFrames, normalizeFilterConfig(config));
   if (sample.kind === "motion" || Array.isArray(sample.rawHolisticSequence)){
     const sequence = holisticMotionSequence(frames, sample.components, aspect);
-    return sequence ? { motion: sequence } : null;
+    return sequence
+      ? { reference: { motion: sequence }, issue: null }
+      : {
+        reference: null,
+        issue: "La secuencia raw no permite extraer los componentes obligatorios o una trayectoria de movimiento."
+      };
   }
   const descriptors = frames.map(frame =>
     extractHolisticFeatures(frame, aspect, sample.components));
-  if (descriptors.some(descriptor => !descriptor)) return null;
-  return { static: meanDescriptors(descriptors) };
+  if (descriptors.some(descriptor => !descriptor)){
+    return {
+      reference: null,
+      issue: "La captura raw no contiene los componentes requeridos en todos los cuadros."
+    };
+  }
+  return { reference: { static: meanDescriptors(descriptors) }, issue: null };
 }
 
 function prepareFilteredReferences(config = state.filterConfig || DEFAULT_FILTER_CONFIG){
@@ -97,7 +114,10 @@ function prepareFilteredReferences(config = state.filterConfig || DEFAULT_FILTER
   if (!Number.isFinite(aspect) || aspect <= 0){
     for (const sample of [...state.samples, ...state.motions]){
       filteredReferences.set(sample, null);
-      if (canReplayReference(sample)) failedReferenceReplays.add(sample);
+      if (canReplayReference(sample)){
+        failedReferenceReplays.add(sample);
+        referenceIssues.set(sample, "No se puede regenerar la referencia EDO: la relación de aspecto del video no está disponible.");
+      }
       else unreplayableReferences.add(sample);
     }
     return false;
@@ -119,18 +139,32 @@ function prepareFilteredReferences(config = state.filterConfig || DEFAULT_FILTER
   preparedSampleCount = state.samples.length;
   preparedMotionCount = state.motions.length;
   for (const sample of [...state.samples, ...state.motions]){
-    const reference = regenerateReference(sample, normalized, aspect);
-    filteredReferences.set(sample, reference);
-    if (!reference && !canReplayReference(sample)) unreplayableReferences.add(sample);
+    if (!isSampleRecognizable(sample)){
+      filteredReferences.set(sample, null);
+      continue;
+    }
+    const result = regenerateReference(sample, normalized, aspect);
+    filteredReferences.set(sample, result.reference);
+    if (!result.reference && !canReplayReference(sample)) unreplayableReferences.add(sample);
     else unreplayableReferences.delete(sample);
-    if (canReplayReference(sample) && !reference) failedReferenceReplays.add(sample);
-    else failedReferenceReplays.delete(sample);
+    if (canReplayReference(sample) && !result.reference){
+      failedReferenceReplays.add(sample);
+      referenceIssues.set(sample, result.issue);
+    } else {
+      failedReferenceReplays.delete(sample);
+      referenceIssues.delete(sample);
+    }
   }
   return true;
 }
 
 function hasFilterReferenceMismatch(sample){
   return unreplayableReferences.has(sample) || failedReferenceReplays.has(sample);
+}
+function referenceIssue(sample){
+  return referenceIssues.get(sample) || (unreplayableReferences.has(sample)
+    ? "La referencia heredada no puede regenerarse con el filtro EDO actual."
+    : null);
 }
 
 function sampleReference(sample, branch, kind = "static"){
@@ -183,7 +217,7 @@ function classifyStaticDescriptor(descriptor, components, branch = "filtered"){
   if (!prepareFilteredReferences() && branch === "filtered") return null;
   const entries = [];
   for (const sample of state.samples){
-    if (sample.syncStatus === "pending" || !sample.components ||
+    if (!isSampleRecognizable(sample) || !sample.components ||
         ["left", "right", "face"].some(key => sample.components[key] !== components[key])) continue;
     const reference = sampleReference(sample, branch);
     if (!reference) continue;
@@ -283,7 +317,7 @@ function references(sample, branch){
 function staticDistances(f, branch){
   const best = {};
   for (const sample of state.samples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     const reference = references(sample, branch);
     if (!Array.isArray(reference) || reference.length !== f.length) continue;
     const distance = dist(f, reference);
@@ -294,7 +328,7 @@ function staticDistances(f, branch){
 function classify(f, branch = "filtered"){
   const ds = [];
   for (const sample of state.samples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     const reference = references(sample, branch);
     if (Array.isArray(reference) && reference.length === f.length){
       ds.push([dist(f, reference), sample.l]);
@@ -325,7 +359,7 @@ function evaluateStaticFrame(frame, branch){
     return descriptorCache.get(key);
   };
   for (const sample of state.samples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     if (sample.components){
       const reference = sampleReference(sample, branch);
       if (!reference || typeof reference !== "object") continue;
@@ -512,7 +546,7 @@ function motionDistances(seq, branch){
   if (!prepareFilteredReferences() && branch === "filtered") return {};
   const best = {};
   for (const motion of state.motions){
-    if (motion.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(motion)) continue;
     const reference = motion.components
       ? sampleReference(motion, branch, "motion")
       : motionReferences(motion, branch);
@@ -543,7 +577,7 @@ function classifyFrame(frame, branch = "filtered", kind = "static"){
   const entries = [];
   const aspect = video.videoWidth / video.videoHeight;
   for (const sample of examples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     const hasReference = isMotion ? Array.isArray(sample[field]) :
       sample[field] && typeof sample[field] === "object";
     const activeReference = sample.components
@@ -607,7 +641,7 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
   const best = {};
   const aspect = video.videoWidth / video.videoHeight;
   for (const sample of examples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     const hasReference = isMotion ? Array.isArray(sample[field]) :
       sample[field] && typeof sample[field] === "object";
     const activeReference = sample.components
@@ -633,7 +667,7 @@ function holisticDistances(frame, branch = "filtered", kind = "static"){
   }
   if (!isMotion){
     for (const sample of examples){
-      if (sample.syncStatus === "pending" || sample.components) continue;
+      if (!isSampleRecognizable(sample) || sample.components) continue;
       const storedSide = sample.captureMeta?.handedness || sample.handedness;
       const side = storedSide
         ? (frame.hands?.[storedSide] ? storedSide : null)
@@ -658,7 +692,7 @@ function pairedHolisticDistances(frame, kind = "static"){
   const filteredFrame = frame.filteredFrame || frame;
   const candidates = new Map();
   for (const sample of examples){
-    if (sample.syncStatus === "pending") continue;
+    if (!isSampleRecognizable(sample)) continue;
     let rawDistance, filteredDistance;
     if (sample.components && kind === "static"){
       const rawReference = sampleReference(sample, "raw");
@@ -713,8 +747,65 @@ function pairedHolisticDistances(frame, kind = "static"){
   return { rawDistances, filteredDistances };
 }
 
+function requiredComponentsPresent(frame, components){
+  const frames = Array.isArray(frame?.filteredFrames)
+    ? frame.filteredFrames : [frame];
+  if (!frames.length) return false;
+  return frames.every(item =>
+    (!components.left || Array.isArray(item.hands?.Left)) &&
+    (!components.right || Array.isArray(item.hands?.Right)) &&
+    (!components.face || Array.isArray(item.faceFeatures)));
+}
+
+function referenceAvailability(frame, kind = "static"){
+  prepareFilteredReferences();
+  const examples = kind === "motion" ? state.motions : state.samples;
+  const pending = examples.filter(sample => sample.syncStatus === "pending").length;
+  const invalid = examples.filter(sample =>
+    sample.syncStatus === "invalid" || sample.syncStatus === "unverified").length;
+  const usable = examples.filter(sample => {
+    if (!isSampleRecognizable(sample)) return false;
+    if (sample.components){
+      const reference = sampleReference(sample, "filtered", kind === "motion" ? "motion" : "static");
+      return kind === "motion" ? Array.isArray(reference) :
+        Boolean(reference && typeof reference === "object");
+    }
+    const reference = kind === "motion" ? sample.s : sample.f;
+    return Array.isArray(reference);
+  });
+  const compatible = usable.filter(sample => sample.components
+    ? requiredComponentsPresent(frame, sample.components)
+    : kind === "motion"
+      ? Boolean(frame?.filteredLegacySequence || frame?.rawLegacySequence)
+      : Boolean(frame?.hands?.[sample.captureMeta?.handedness || sample.handedness] ||
+        (!sample.captureMeta?.handedness && !sample.handedness &&
+          (frame?.hands?.Left || frame?.hands?.Right))));
+  if (!usable.length){
+    const issue = examples.map(referenceIssue).find(Boolean);
+    const message = issue
+      ? `No existen referencias utilizables: ${issue}`
+      : pending
+        ? `No existen referencias utilizables; ${pending} muestra(s) siguen pendientes de subida.`
+        : invalid
+          ? `No existen referencias utilizables; ${invalid} muestra(s) locales requieren revisión.`
+          : "La biblioteca está vacía; no hay referencias utilizables.";
+    return { available: false, compatible: false, pending, invalid, message };
+  }
+  if (!compatible.length){
+    return {
+      available: true, compatible: false, pending, invalid,
+      message: "No hay señas compatibles con los componentes detectados (mano izquierda, mano derecha o rostro)."
+    };
+  }
+  return {
+    available: true, compatible: true, pending, invalid,
+    message: "Seña no reconocida: la distancia supera el umbral configurado."
+  };
+}
+
 return { features, classify, classifyMotion, classifyFrame, holisticDistances, meanDescriptors,
   resampleDescriptors, holisticMotionSequence, toSequence, toSequencePair, staticDistances, motionDistances,
   compareStaticFrames, pairedHolisticDistances, calculateDistanceReduction, prepareFilteredReferences,
-  filterFrames, classifyStaticDescriptor, hasFilterReferenceMismatch };
+  filterFrames, classifyStaticDescriptor, hasFilterReferenceMismatch, referenceIssue,
+  referenceAvailability };
 }

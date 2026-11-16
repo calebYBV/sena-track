@@ -289,3 +289,26 @@ test("all application module imports use one versioned import map, including laz
     assert.doesNotMatch(source, /traceCoordinate/);
   }
 });
+
+test("comparison output distinguishes unavailable references from a distance rejection", async () => {
+  const html = await read("index.html");
+  const { elements, ui } = installUI(html);
+  elements.get("distanceReduction").parentElement = new FakeElement("distanceReductionParent");
+  ui.updateComparison({
+    detected: false,
+    reason: "No existen referencias utilizables; 2 muestra(s) siguen pendientes de subida."
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "Sin referencias utilizables");
+
+  ui.updateComparison({
+    detected: false,
+    reason: "No hay señas compatibles con los componentes detectados."
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "Sin señas compatibles");
+
+  ui.updateComparison({
+    detected: true,
+    filteredPrediction: null
+  });
+  assert.equal(elements.get("filteredPrediction").textContent, "No identificada");
+});

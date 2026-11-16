@@ -374,6 +374,10 @@ test("a failed v2 reference replay cannot silently use stale filtered features",
   recognition.prepareFilteredReferences(DEFAULT_FILTER_CONFIG);
 
   assert.equal(recognition.hasFilterReferenceMismatch(sample), true);
+  assert.equal(
+    recognition.referenceIssue(sample),
+    "La captura raw no contiene los componentes requeridos en todos los cuadros."
+  );
   assert.equal(recognition.classifyStaticDescriptor(descriptor, components, "filtered"), null);
   assert.equal(
     recognition.classifyStaticDescriptor(descriptor, components, "raw")?.label,

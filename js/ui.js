@@ -10,6 +10,7 @@ import {
 } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 import { globalTraceDisplacement } from "./globalTrace.js";
+import { isSampleRecognizable } from "./sampleSync.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -222,9 +223,15 @@ function renderList(){
     const tag = document.createElement("span");
     tag.className = "tag" + (hasLegacy ? " legacy" : "");
     const hasPending = examples.some(example => example.syncStatus === "pending");
+    const hasLocal = examples.some(example => example.syncStatus === "local");
+    const hasInvalid = examples.some(example => example.syncStatus === "invalid");
+    const hasUnverified = examples.some(example => example.syncStatus === "unverified");
     tag.textContent = [
       hasLegacy ? "incluye señas anteriores" : "",
-      hasPending ? "pendiente de sincronización" : ""
+      hasPending ? "incluye muestras pendientes de subida" : "",
+      hasLocal ? "copia local verificada" : "",
+      hasInvalid ? "referencia inválida" : "",
+      hasUnverified ? "referencia local sin verificar" : ""
     ].filter(Boolean).join(" · ");
     const cnt = document.createElement("span"); cnt.className = "count-txt";
     cnt.textContent = `${countCapturesForLabel(examples, label)} capturas`;
@@ -355,7 +362,7 @@ function refreshReferences(){
   const select = evaluationReference;
   const selected = select.value;
   const labels = new Set([...state.samples, ...state.motions]
-    .filter(example => example.syncStatus !== "pending")
+    .filter(isSampleRecognizable)
     .map(example => example.l));
   select.replaceChildren(new Option("Candidata de la rama principal", ""));
   for (const label of labels) select.add(new Option(label, label));
@@ -389,9 +396,13 @@ function setEvaluationEnabled(enabled){
     renderComparison();
   }
 }
-function predictionText(prediction){
+function predictionText(prediction, comparison){
   if (prediction?.reason === "ambiguous") return "Ambigua";
-  return prediction?.label || "No identificada";
+  if (prediction?.label) return prediction.label;
+  if (/referencias utilizables/.test(comparison?.reason || "")) return "Sin referencias utilizables";
+  if (/No hay señas compatibles/.test(comparison?.reason || "")) return "Sin señas compatibles";
+  if (/requerido fuera de cámara/.test(comparison?.reason || "")) return "Componente requerido ausente";
+  return "No identificada";
 }
 function renderComparison(){
   if ($("evaluationPanel").getAttribute("aria-disabled") === "true") return;
@@ -402,8 +413,8 @@ function renderComparison(){
   reductionReadout.setAttribute("aria-label", "Diferencia de distancia no disponible");
   executionStatus.textContent = "Esperando ejecución";
   executionStatus.classList.remove("is-current", "is-unavailable");
-  $("rawPrediction").textContent = predictionText(result?.rawPrediction);
-  $("filteredPrediction").textContent = predictionText(result?.filteredPrediction);
+  $("rawPrediction").textContent = predictionText(result?.rawPrediction, result);
+  $("filteredPrediction").textContent = predictionText(result?.filteredPrediction, result);
   $("rawDistance").textContent = "—";
   $("filteredDistance").textContent = "—";
   $("distanceReduction").textContent = "No disponible";
@@ -583,8 +594,15 @@ function showNoHand(){
   signEl.textContent = "Sin mano"; signEl.className = "sign idle"; metaEl.textContent = "";
 }
 
+function showRecognitionMessage(message){
+  if (performance.now() < state.readoutLock) return;
+  signEl.textContent = message;
+  signEl.className = "sign idle";
+  metaEl.textContent = "";
+}
 
 return { setNote, stability, lostHand, addToPhrase, renderList, showLocked, show, showNoHand,
   updateComparison, updateTrackingMetrics, setEvaluationEnabled, refreshReferences, refreshFilterControls,
-  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls, refreshAmbiguityControls };
+  updateCoordinateTrace, resetCoordinateTrace, setSyncStatus, clearForUser, refreshGeneralControls,
+  refreshAmbiguityControls, showRecognitionMessage };
 }

@@ -121,6 +121,26 @@ test("facial-only motion distance includes head trajectory", () => {
   assert.ok(holisticDistance(stationary, moving, required) > 0);
 });
 
+test("reference availability distinguishes an empty library from incompatible components", () => {
+  const values = { tol: "0.8", tolM: "0.7" };
+  const state = { samples: [], motions: [] };
+  const recognition = createRecognition({
+    state,
+    dom: { $: id => ({ value: values[id] }), video: { videoWidth: 640, videoHeight: 480 } }
+  });
+  assert.match(recognition.referenceAvailability(holisticFrame()).message, /biblioteca está vacía/);
+
+  const leftOnly = { left: true, right: false, face: false };
+  const referenceFrame = holisticFrame({ faceAvailable: false });
+  const descriptor = extractHolisticFeatures(referenceFrame, 4 / 3, leftOnly);
+  state.samples.push({ l: "Izquierda", components: leftOnly, h: descriptor, rh: descriptor, syncStatus: "saved" });
+  const rightFrame = holisticFrame({ left: null, right: hand(0.5), faceAvailable: false });
+  assert.equal(recognition.referenceAvailability(rightFrame).available, true);
+  assert.equal(recognition.referenceAvailability(rightFrame).compatible, false);
+  assert.match(recognition.referenceAvailability(rightFrame).message, /No hay señas compatibles/);
+  assert.equal(recognition.classifyFrame(rightFrame), null);
+});
+
 test("recognition returns no label for empty or pending-only libraries", () => {
   const values = { tol: "0.8", tolM: "0.7" };
   const state = { samples: [], motions: [] };

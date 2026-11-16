@@ -9,6 +9,7 @@ import {
   isCurrentRecognitionResult,
   selectActivePrediction
 } from "./recognitionState.js";
+import { isSampleRecognizable } from "./sampleSync.js";
 
 const WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODEL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task";
@@ -194,9 +195,14 @@ function compareStatic(track, timestamp){
   const requested = $("evaluationReference").value;
   const mainPrediction = selectActivePrediction(filteredPrediction);
   const reference = requested || mainPrediction?.label;
-  const examples = state.samples.filter(sample => sample.l === reference);
+  const examples = state.samples.filter(sample =>
+    sample.l === reference && isSampleRecognizable(sample));
+  const availability = recognition.referenceAvailability(filteredFrame, "static");
   updateComparison({
-    kind: "static", detected: true, rawPrediction, filteredPrediction, rawDistances, filteredDistances,
+    kind: "static",
+    detected: availability.available && availability.compatible,
+    reason: availability.available && availability.compatible ? undefined : availability.message,
+    rawPrediction, filteredPrediction, rawDistances, filteredDistances,
     hasReference: examples.length > 0,
     legacyReference: examples.some(sample => !sample.components),
     referenceFilterMismatch: examples.some(recognition.hasFilterReferenceMismatch)
@@ -248,8 +254,8 @@ function processFrame(){
       face: !!face?.rawLandmarks && !!face?.filteredLandmarks,
       faceFeatures: !!face?.rawFeatures && !!face?.filteredFeatures
     };
-    const requiredMissing = state.samples.some(sample => sample.syncStatus !== "pending" &&
-      sample.components && ((sample.components.left && !presence.Left) ||
+    const requiredMissing = state.samples.some(sample =>
+      isSampleRecognizable(sample) && sample.components && ((sample.components.left && !presence.Left) ||
         (sample.components.right && !presence.Right) ||
         (sample.components.face && !presence.faceFeatures)));
     $("componentStatus").textContent =
@@ -311,6 +317,11 @@ function processFrame(){
         }
         if (isCurrentRecognitionResult(state, recognitionGeneration)){
           show(mainPrediction);
+          if (!mainPrediction?.label && mainPrediction?.reason !== "ambiguous"){
+            ui.showRecognitionMessage(
+              recognition.referenceAvailability(filteredFrame, "static").message
+            );
+          }
           stability(mainPrediction, timestamp, recognitionGeneration);
         }
       } else if (!isCapturing){
