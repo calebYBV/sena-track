@@ -10,7 +10,7 @@ import {
 } from "./recognitionState.js";
 import { countCapturesForLabel } from "./sampleCount.js";
 import { globalTraceDisplacement } from "./globalTrace.js";
-import { isSampleRecognizable } from "./sampleSync.js";
+import { isSampleRecognizable, summarizeLibrary } from "./sampleSync.js";
 
 export function createUI({ state, dom, savePreferences, deleteSign }) {
 const { $, video, canvas, ctx, statusEl, signEl, metaEl, holdBar, phraseEl, listEl, trainBar, noteEl, countEl, bannerEl, bannerText, bannerBar } = dom;
@@ -120,6 +120,22 @@ function setSyncStatus(text, status = "saved"){
   $("syncRetry").hidden = status !== "error" && status !== "pending";
 }
 
+function renderLibrarySummary(){
+  const element = document.getElementById("librarySummary");
+  if (!element) return;
+  const counts = summarizeLibrary([...state.samples, ...state.motions], state.userId,
+    state.unavailableReferences || 0);
+  const parts = [
+    ["verificada(s)", counts.verified], ["pendiente(s) de subida", counts.pending],
+    ["inválida(s)", counts.invalid], ["sin verificar", counts.unverified],
+    ["no disponible(s) en Supabase", counts.unavailable]
+  ].filter(([, n]) => n > 0).map(([label, n]) => `${n} ${label}`);
+  const notice = counts.pending || counts.unavailable
+    ? "Sincronización pendiente; el reconocimiento sigue activo con las muestras verificadas. " : "";
+  element.hidden = !parts.length;
+  element.textContent = parts.length ? `${notice}Muestras: ${parts.join(" · ")}.` : "";
+}
+
 function setSyncIssues(issues){
   $("syncIssues").hidden = !issues.length;
   $("syncIssuesText").textContent = issues.join("\n\n");
@@ -210,6 +226,7 @@ function renderList(){
     groups.get(example.l).push(example);
   }
   listEl.innerHTML = "";
+  renderLibrarySummary();
   if (!groups.size){
     listEl.innerHTML = '<li class="empty" style="background:none;padding:0">Tu biblioteca está vacía. Registra tu primera seña</li>';
     refreshReferences();
@@ -235,7 +252,7 @@ function renderList(){
       hasLegacy ? "incluye señas anteriores" : "",
       hasPending ? "incluye muestras pendientes de subida" : "",
       hasLocal ? "copia local verificada" : "",
-      hasInvalid ? "referencia inválida" : "",
+      hasInvalid ? "referencia inválida (conservada, excluida)" : "",
       hasUnverified ? "referencia local sin verificar" : ""
     ].filter(Boolean).join(" · ");
     const cnt = document.createElement("span"); cnt.className = "count-txt";

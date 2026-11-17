@@ -6,7 +6,7 @@ import {
   SAMPLE_STORAGE_THRESHOLD_BYTES,
   validateSample
 } from "./sampleFormat.js";
-import { isSampleRecognizable, restoreCachedSample } from "./sampleSync.js";
+import { isSampleRecognizable, isSyncCandidate, restoreCachedSample } from "./sampleSync.js";
 import { createSampleBackup, mergeBackupCaptures, mergeLocalCaptures, readSampleBackup } from "./sampleBackup.js";
 import { getSupabaseClient } from "./supabaseClient.js";
 
@@ -441,6 +441,24 @@ export function createStorage({
       applySettings(cached.settings);
       setSyncStatus(pendingStatus(cached), "pending");
       renderList();
+      // A pending queue must not hide verified remote references; failures keep the local library.
+      try {
+        const client = await getSupabaseClientImpl();
+        const remote = await readRemoteLibrary(client, id);
+        if (userId !== id || userLoadToken !== loadToken){
+          return { samples: [], motions: [], cancelled: true };
+        }
+        mergeRemoteIntoState(remote, cached);
+        state.unavailableReferences = remote.unavailableObjects.length + remote.invalidReferences.length;
+        reportRemoteIssues(remote, cached, id);
+        setSyncStatus(pendingStatus(cached), "pending");
+        renderList();
+      } catch (error){
+        console.error("No se pudo recuperar la biblioteca remota; se usa la copia local.");
+        if (userId === id && userLoadToken === loadToken){
+          setSyncStatus(`${pendingStatus(cached)} No se pudo consultar Supabase: ${error.message}`, "pending");
+        }
+      }
       return { samples: state.samples, motions: state.motions, settings: cached.settings, pending: true };
     }
     setSyncStatus("Cargando biblioteca…", "loading");
@@ -467,6 +485,7 @@ export function createStorage({
         state.samples = remote.samples;
         state.motions = remote.motions;
       }
+      state.unavailableReferences = remote.unavailableObjects.length + remote.invalidReferences.length;
       reportRemoteIssues(remote, cached, id);
       state.ambiguityConfig = normalizeAmbiguityConfig(cached?.ambiguity || DEFAULT_AMBIGUITY_CONFIG);
       ui.refreshAmbiguityControls();
@@ -769,6 +788,12 @@ export function createStorage({
       ...cache.samples.map(sample => ({ sample, kind: "static" })),
       ...cache.motions.map(sample => ({ sample, kind: "motion" }))
     ].filter(({ sample }) => sample.syncStatus === "pending");
+    // Invalid captures are kept untouched but never retried until they validate.
+    const skippedInvalid = all.filter(({ sample, kind }) => !isSyncCandidate(sample, kind));
+    if (skippedInvalid.length){
+      syncIssues.push(`${skippedInvalid.length} captura(s) inválida(s) se conservaron sin subir ni reconocer.`);
+    }
+    all.splice(0, all.length, ...all.filter(({ sample, kind }) => isSyncCandidate(sample, kind)));
     for (const [index, { sample, kind }] of all.entries()){
       if (userId !== id) return false;
       if (userId === id) setSyncStatus(
@@ -857,17 +882,23 @@ export function createStorage({
       }
     }
     reportRemoteIssues(remote, cache, id, syncIssues);
-    return { blocked, invalidReferences: remote.invalidReferences.length, syncIssues };
+    return { blocked, skippedInvalid: skippedInvalid.length,
+      invalidReferences: remote.invalidReferences.length, syncIssues };
   }
 
   function pendingStatus(cache){
-    const samples = [...(cache.samples || []), ...(cache.motions || [])];
-    const pendingSamples = samples.filter(sample => sample.syncStatus === "pending").length;
+    const candidates = [
+      ...(cache.samples || []).map(sample => ["static", sample]),
+      ...(cache.motions || []).map(sample => ["motion", sample])
+    ].filter(([, sample]) => sample.syncStatus === "pending");
+    const pendingSamples = candidates.filter(([kind, sample]) => isSyncCandidate(sample, kind)).length;
+    const invalidSamples = candidates.length - pendingSamples;
     const preferences = cache.settingsPending ? "preferencias pendientes" : "";
     const deletions = cache.pendingDeletes?.length
       ? `${cache.pendingDeletes.length} eliminación(es) pendientes de confirmación separada` : "";
     const details = [
       pendingSamples ? `${pendingSamples} muestra(s) pendiente(s) de subida` : "",
+      invalidSamples ? `${invalidSamples} muestra(s) inválida(s) conservadas sin subir` : "",
       preferences,
       deletions
     ].filter(Boolean);
@@ -945,10 +976,10 @@ export function createStorage({
             // The remote write finished for this exact revision. Never commit a
             // stale snapshot over a capture, preference, or deletion queued later.
             const remaining = [...cache.samples, ...cache.motions].filter(sample => sample.syncStatus === "pending").length;
-            if (remaining !== completed.blocked){
+            if (remaining !== completed.blocked + completed.skippedInvalid){
               throw new Error("Quedan muestras sin confirmar; se conserva la cola local.");
             }
-            cache.pending = remaining > 0 || Boolean(cache.pendingDeletes?.length);
+            cache.pending = completed.blocked > 0 || Boolean(cache.pendingDeletes?.length);
             cache.settingsPending = false;
             cache.revision = (Number.isFinite(latest.revision) ? latest.revision : 0) + 1;
             await storeCache(cache, id);

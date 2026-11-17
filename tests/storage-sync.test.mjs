@@ -1282,7 +1282,8 @@ test("a conflicting or invalid capture does not prevent independent captures fro
   assert.equal(cache.samples[1].syncStatus, "pending");
   assert.equal(cache.samples[2].syncStatus, "pending");
   assert.equal(cache.samples[3].syncStatus, "saved");
-  assert.match(harness.issues.at(-1).join(" "), /no coincide.*Contenido incompatible/);
+  assert.match(harness.issues.at(-1).join(" "), /no coincide/);
+  assert.match(harness.issues.at(-1).join(" "), /inválida\(s\) se conservaron sin subir/);
 });
 
 test("a successful insert is not confirmed when the subsequent read fails or content differs", async () => {
@@ -1503,4 +1504,81 @@ test("a failed sample upload does not block other captures and remains available
   cache = harness.indexedDB.records.get("account-a");
   assert.equal(cache.samples.filter(sample => sample.syncStatus === "pending").length, 0);
   assert.equal(harness.database.sign_samples.length, 5);
+});
+
+test("an invalid pending capture is excluded from recognition and retries but its data is preserved", async () => {
+  const indexedDB = new MemoryIndexedDB();
+  const invalid = { ...staticSample("Inválida"), f: [1], syncId: "bad-1" };
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, samples: [invalid, staticSample("Buena", 0.4)],
+    motions: [], pending: true, pendingDeletes: []
+  });
+  const database = makeDatabase();
+  const harness = makeHarness({ database, indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  const restored = harness.state.samples.find(sample => sample.l === "Inválida");
+  assert.equal(restored.syncStatus, "invalid");
+  const before = database.sign_samples.length;
+  await harness.storage.retrySync();
+  const cache = indexedDB.records.get("account-a");
+  assert.deepEqual(cache.samples[0].f, [1]);
+  assert.equal(cache.samples[1].syncStatus, "saved");
+  assert.equal(cache.pending, false);
+  assert.equal(database.sign_samples.length, before + 1);
+  assert.equal(database.signs.some(sign => sign.name === "Inválida"), false);
+  const recognition = recognitionFor(harness.state);
+  assert.equal(recognition.classify(vector(0))?.label, "A");
+});
+
+test("a pending queue still recovers verified remote references and Supabase failures do not block recognition", async () => {
+  const indexedDB = new MemoryIndexedDB();
+  indexedDB.records.set("account-a", {
+    userId: "account-a", version: 1, samples: [staticSample("Local", 0.5)],
+    motions: [], pending: true, pendingDeletes: []
+  });
+  const harness = makeHarness({ indexedDB });
+  await harness.storage.loadUserLibrary("account-a");
+  assert.ok(harness.state.samples.some(sample => sample.l === "A" && sample.syncStatus === "saved"));
+  assert.equal(recognitionFor(harness.state).classify(vector(0))?.label, "A");
+
+  const failing = makeDatabase();
+  failing.failSignRead = true;
+  const offline = makeHarness({ database: failing, indexedDB });
+  await offline.storage.loadUserLibrary("account-a");
+  assert.equal(offline.state.samples.length, 1);
+  assert.equal(offline.state.samples[0].syncStatus, "pending");
+  assert.equal(indexedDB.records.get("account-a").samples[0].l, "Local");
+  assert.equal(recognitionFor(offline.state).classify(vector(0.5))?.label, undefined);
+});
+
+test("partial uploads keep verified references recognizable and unavailable objects are not marked verified", async () => {
+  const database = incidentDatabase();
+  const harness = makeHarness({ database });
+  await harness.storage.loadUserLibrary("account-a");
+  harness.state.samples.push(staticSample("Nueva", 0.3));
+  database.failSampleInsert = true;
+  database.failStorageUpload = true;
+  assert.equal(await harness.storage.saveAll(), false);
+  const pending = harness.state.samples.find(sample => sample.l === "Nueva");
+  assert.equal(pending.syncStatus, "pending");
+  const recognition = recognitionFor(harness.state);
+  assert.equal(recognition.classify(vector(0))?.label, "A");
+  assert.equal(recognition.classify(vector(0.3))?.label, undefined);
+  assert.equal(database.storageRemoveCalls, 0);
+});
+
+test("references with incompatible components are ignored without blocking compatible signs", () => {
+  const state = {
+    userId: "account-a", filterConfig: { model: "first", tau: 0.06 },
+    samples: [
+      { ...staticSample("A", 0, "saved"), verifiedUserId: "account-a", syncId: "ok-1" },
+      { ...staticSample("Cara", 0.5, "saved"), verifiedUserId: "account-a", syncId: "face-1",
+        components: { left: false, right: false, face: true } }
+    ],
+    motions: []
+  };
+  const recognition = recognitionFor(state);
+  assert.equal(recognition.classify(vector(0))?.label, "A");
+  const availability = recognition.referenceAvailability({ hands: { Left: [] } }, "static");
+  assert.equal(availability.available, true);
 });

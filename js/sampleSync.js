@@ -45,3 +45,24 @@ export function restoreCachedSample(sample, kind, {
     syncIssue: "No se pudo confirmar que esta captura local estuviera guardada en la cuenta."
   };
 }
+
+export function isSyncCandidate(sample, kind){
+  if (!sample || sample.syncStatus !== "pending") return false;
+  try {
+    validateSample(sample, kind);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function summarizeLibrary(samples, ownerId, unavailable = 0){
+  const summary = { verified: 0, pending: 0, invalid: 0, unverified: 0, unavailable };
+  for (const sample of samples){
+    if (isSampleRecognizable(sample, ownerId)) summary.verified++;
+    else if (sample.syncStatus === "pending") summary.pending++;
+    else if (sample.syncStatus === "invalid") summary.invalid++;
+    else summary.unverified++;
+  }
+  return summary;
+}
